@@ -1,2 +1,3 @@
 streamlit
 sqlalchemy
+streamlit_option_menu
