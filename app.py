@@ -1,6 +1,6 @@
 import streamlit as st
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Date
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Date, Boolean
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import pandas as pd
 from datetime import datetime
 
@@ -21,6 +21,7 @@ class Material(Base):
     __tablename__ = 'material'
     id = Column(Integer, primary_key=True)
     name = Column(String(80), nullable=False)
+    producer_name = Column(String(80), nullable=True)  # New field for producer name
     unit = Column(String(20), nullable=False)
     quantity = Column(Float, default=0.0)
 
@@ -41,11 +42,19 @@ class Supplier(Base):
     contact_email = Column(String(80), nullable=False)
     phone_number = Column(String(20), nullable=False)
     vat_number = Column(String(20), nullable=False)
+    organic_number = Column(String(80), nullable=True)  # New field for organic number
+
+class Recipe(Base):
+    __tablename__ = 'recipe'
+    id = Column(Integer, primary_key=True)
+    product_id = Column(Integer, ForeignKey('product.id'), nullable=False)
+    method = Column(String, nullable=True)  # Longer text field for method
+    output_quantity = Column(Float, nullable=False)
 
 class BoM(Base):
     __tablename__ = 'bom'
     id = Column(Integer, primary_key=True)
-    product_id = Column(Integer, ForeignKey('product.id'), nullable=False)  # The product being produced
+    recipe_id = Column(Integer, ForeignKey('recipe.id'), nullable=False)  # Link to recipe
     component_material_id = Column(Integer, ForeignKey('material.id'), nullable=True)
     component_product_id = Column(Integer, ForeignKey('product.id'), nullable=True)
     quantity_required = Column(Float, nullable=False)
@@ -88,6 +97,7 @@ class MaterialBatch(Base):
     quantity = Column(Float, nullable=False)
     unit = Column(String(20), nullable=False)
     date = Column(Date, nullable=False)
+    checked = Column(Boolean, default=False)  # New field for checked status
 
 # New table for Product Batches
 class ProductBatch(Base):
@@ -110,6 +120,24 @@ class DisposalRecord(Base):
     unit = Column(String(20), nullable=False)
     reason = Column(String(255), nullable=False)
     date = Column(Date, nullable=False)
+
+# New tables for Purchase Orders
+class PurchaseOrder(Base):
+    __tablename__ = 'purchase_order'
+    id = Column(Integer, primary_key=True)
+    supplier_id = Column(Integer, ForeignKey('supplier.id'), nullable=False)
+    date = Column(Date, nullable=False)
+    checked = Column(Boolean, default=False)
+    items = relationship('PurchaseOrderItem', backref='purchase_order')
+
+class PurchaseOrderItem(Base):
+    __tablename__ = 'purchase_order_item'
+    id = Column(Integer, primary_key=True)
+    purchase_order_id = Column(Integer, ForeignKey('purchase_order.id'), nullable=False)
+    material_id = Column(Integer, ForeignKey('material.id'), nullable=False)
+    batch_id = Column(String(80), nullable=False)
+    quantity = Column(Float, nullable=False)
+    unit = Column(String(20), nullable=False)
 
 # Set up the database
 engine = create_engine('sqlite:///erp.db')
@@ -158,14 +186,14 @@ if action == "Administrationsside":
     st.header("Administrationsside")
     management_option = st.selectbox(
         "Vælg, hvad du vil administrere",
-        ["Materialer", "Produkter", "Kunder", "Leverandører", "Styklister (BoM)", "Produktionsordrer", "Salgsordrer", "Materiale Batches", "Produkt Batches"]
+        ["Materialer", "Produkter", "Kunder", "Leverandører", "Styklister (BoM)", "Produktionsordrer", "Salgsordrer", "Indkøbsordrer", "Materiale Batches", "Produkt Batches"]
     )
 
     # Manage Materials
     if management_option == "Materialer":
         materials = session.query(Material).all()
-        material_options = [(m.id, m.name, m.quantity, m.unit) for m in materials]
-        df = pd.DataFrame(material_options, columns=["ID", "Navn", "Mængde", "Enhed"])
+        material_options = [(m.id, m.name, m.quantity, m.unit, m.producer_name) for m in materials]
+        df = pd.DataFrame(material_options, columns=["ID", "Navn", "Mængde", "Enhed", "Producentnavn"])
         st.dataframe(df)
     
         st.subheader("Rediger eller slet materiale")
@@ -175,11 +203,13 @@ if action == "Administrationsside":
             new_name = st.text_input("Materialets navn", value=selected_material.name)
             new_unit = st.selectbox("Enhed", ["kg", "g", "l", "ml", "stk"], index=["kg", "g", "l", "ml", "stk"].index(selected_material.unit))
             new_quantity = st.number_input("Mængde", min_value=0.0, step=0.1, value=selected_material.quantity)
+            new_producer_name = st.text_input("Producentnavn", value=selected_material.producer_name or "")
     
             if st.button("Opdater materiale"):
                 selected_material.name = new_name
                 selected_material.unit = new_unit
                 selected_material.quantity = new_quantity
+                selected_material.producer_name = new_producer_name
                 try:
                     session.commit()
                     st.success("Materiale opdateret med succes!")
@@ -245,7 +275,7 @@ if action == "Administrationsside":
                     try:
                         # Check for dependencies, e.g., if product is used in any BoMs or Production Orders
                         bom_entries = session.query(BoM).filter(
-                            (BoM.component_product_id == selected_product_id) | (BoM.product_id == selected_product_id)
+                            (BoM.component_product_id == selected_product_id) | (BoM.recipe_id == selected_product_id)
                         ).all()
                         production_orders = session.query(ProductionOrder).filter_by(product_id=selected_product_id).all()
                         if bom_entries or production_orders:
@@ -280,8 +310,8 @@ if action == "Administrationsside":
     # Manage Suppliers
     elif management_option == "Leverandører":
         suppliers = session.query(Supplier).all()
-        supplier_options = [(s.id, s.name, s.address, s.contact_email, s.phone_number, s.vat_number) for s in suppliers]
-        df = pd.DataFrame(supplier_options, columns=["ID", "Navn", "Adresse", "Kontakt Email", "Telefonnummer", "CVR-nummer"])
+        supplier_options = [(s.id, s.name, s.address, s.contact_email, s.phone_number, s.vat_number, s.organic_number) for s in suppliers]
+        df = pd.DataFrame(supplier_options, columns=["ID", "Navn", "Adresse", "Kontakt Email", "Telefonnummer", "CVR-nummer", "Økologinummer"])
         st.dataframe(df)
 
         # Editing and deleting suppliers can be added here if needed
@@ -303,7 +333,8 @@ if action == "Administrationsside":
                 component_name = "Ukendt"
                 component_type = "Ukendt"
     
-            product = session.query(Product).filter_by(id=b.product_id).first()
+            recipe = session.query(Recipe).filter_by(id=b.recipe_id).first()
+            product = session.query(Product).filter_by(id=recipe.product_id).first()
             product_name = product.name if product else "Ukendt"
     
             bom_options.append((b.id, product_name, component_type, component_name, b.quantity_required, b.unit))
@@ -332,7 +363,7 @@ if action == "Administrationsside":
 
 
     # Manage Production Orders
-    elif management_option == "Produktionsordrer":
+    if management_option == "Produktionsordrer":
         production_orders = session.query(ProductionOrder).all()
         production_data = []
         for po in production_orders:
@@ -348,36 +379,114 @@ if action == "Administrationsside":
         df = pd.DataFrame(production_data)
         st.dataframe(df)
 
-        selected_production_order_id = st.number_input("Indtast produktionsordre ID for at se detaljer", min_value=1, step=1, key="selected_production_order_id")
+        st.subheader("Rediger eller slet produktionsordre")
+        selected_production_order_id = st.number_input("Indtast produktionsordre ID", min_value=1, step=1, key="selected_production_order_id")
         selected_order = session.query(ProductionOrder).filter_by(id=selected_production_order_id).first()
         if selected_order:
-            st.subheader(f"Detaljer for Produktionsordre ID {selected_production_order_id}")
-            # Fetch components used in this production order
-            components_used = session.query(ProductionOrderComponent).filter_by(production_order_id=selected_production_order_id).all()
-            component_details = []
-            for component in components_used:
-                if component.component_material_id:
-                    comp = session.query(Material).filter_by(id=component.component_material_id).first()
-                    component_type = "Materiale"
-                    batch = session.query(MaterialBatch).filter_by(id=component.batch_id).first()
+            new_status = st.selectbox("Status", ["Afventer", "Planlagt", "I gang", "Afsluttet", "Annulleret"], index=["Afventer", "Planlagt", "I gang", "Afsluttet", "Annulleret"].index(selected_order.status))
+            new_quantity = st.number_input("Ny mængde af produkt", min_value=0.0, step=0.1, value=selected_order.quantity)
+            product_options = [(p.id, p.name) for p in session.query(Product).all()]
+            selected_product_index = next((index for (index, p) in enumerate(product_options) if p[0] == selected_order.product_id), 0)
+            new_product_option = st.selectbox("Vælg nyt produkt", product_options, index=selected_product_index)
+            new_product_id = new_product_option[0]
+
+            if st.button("Opdater produktionsordre"):
+                try:
+                    # Update product quantity
+                    old_product = session.query(Product).filter_by(id=selected_order.product_id).first()
+                    old_product.quantity -= selected_order.quantity
+
+                    new_product = session.query(Product).filter_by(id=new_product_id).first()
+                    new_product.quantity += new_quantity
+
+                    # Update production order
+                    selected_order.status = new_status
+                    selected_order.quantity = new_quantity
+                    selected_order.product_id = new_product_id
+
+                    session.commit()
+                    st.success("Produktionsordre opdateret med succes!")
+
+                    # Update components used
+                    st.subheader("Opdater komponenter brugt i produktionsordren")
+                    components_used = session.query(ProductionOrderComponent).filter_by(production_order_id=selected_production_order_id).all()
+                    for component in components_used:
+                        if component.component_material_id:
+                            component_type = "Materiale"
+                            comp = session.query(Material).filter_by(id=component.component_material_id).first()
+                        else:
+                            component_type = "Produkt"
+                            comp = session.query(Product).filter_by(id=component.component_product_id).first()
+                        new_quantity_used = st.number_input(f"Ny mængde brugt af {component_type} '{comp.name}'", min_value=0.0, step=0.1, value=component.quantity_used, key=f"comp_{component.id}")
+                        if st.button(f"Opdater komponent '{comp.name}'", key=f"update_comp_{component.id}"):
+                            # Update quantities
+                            if component.component_material_id:
+                                # Restore old quantity
+                                comp.quantity += component.quantity_used
+                                # Deduct new quantity
+                                comp.quantity -= new_quantity_used
+                            else:
+                                # Restore old quantity
+                                comp.quantity += component.quantity_used
+                                # Deduct new quantity
+                                comp.quantity -= new_quantity_used
+                            component.quantity_used = new_quantity_used
+                            session.commit()
+                            st.success(f"Komponent '{comp.name}' opdateret med succes!")
+
+                except Exception as e:
+                    session.rollback()
+                    st.error(f"Fejl under opdatering af produktionsordre: {str(e)}")
+
+            if st.button("Slet produktionsordre"):
+                confirm_delete = st.checkbox("Bekræft sletning")
+                if confirm_delete:
+                    try:
+                        # Restore product quantity
+                        product = session.query(Product).filter_by(id=selected_order.product_id).first()
+                        product.quantity -= selected_order.quantity
+
+                        # Delete product batch
+                        product_batch = session.query(ProductBatch).filter_by(batch_id=selected_order.batch_id).first()
+                        if product_batch:
+                            session.delete(product_batch)
+
+                        # Restore materials/products used in production
+                        components_used = session.query(ProductionOrderComponent).filter_by(production_order_id=selected_production_order_id).all()
+                        for component in components_used:
+                            if component.component_material_id:
+                                # Material
+                                material = session.query(Material).filter_by(id=component.component_material_id).first()
+                                batch = session.query(MaterialBatch).filter_by(id=component.batch_id).first()
+                                # Increase batch quantity
+                                batch.quantity += component.quantity_used
+                                # Increase total material quantity
+                                material.quantity += convert_units(component.quantity_used, component.unit, material.unit)
+                            else:
+                                # Product
+                                product_comp = session.query(Product).filter_by(id=component.component_product_id).first()
+                                batch = session.query(ProductBatch).filter_by(id=component.batch_id).first()
+                                # Increase batch quantity
+                                batch.quantity += component.quantity_used
+                                # Increase total product quantity
+                                product_comp.quantity += convert_units(component.quantity_used, component.unit, product_comp.unit)
+
+                            # Delete ProductionOrderComponent record
+                            session.delete(component)
+
+                        # Delete the production order
+                        session.delete(selected_order)
+
+                        session.commit()
+                        st.success("Produktionsordre slettet og lager opdateret med succes!")
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"Fejl under sletning af produktionsordre: {str(e)}")
                 else:
-                    comp = session.query(Product).filter_by(id=component.component_product_id).first()
-                    component_type = "Produkt"
-                    batch = session.query(ProductBatch).filter_by(id=component.batch_id).first()
-                component_details.append({
-                    "Komponenttype": component_type,
-                    "Navn": comp.name if comp else "Ukendt",
-                    "Batch ID": batch.batch_id if batch else "Ukendt",
-                    "Mængde brugt": component.quantity_used,
-                    "Enhed": component.unit
-                })
-            if component_details:
-                comp_df = pd.DataFrame(component_details)
-                st.dataframe(comp_df)
-            else:
-                st.write("Ingen komponentdetaljer fundet for denne produktionsordre.")
+                    st.warning("Marker 'Bekræft sletning' for at slette produktionsordren.")
         else:
-            st.info("Indtast et gyldigt produktionsordre ID for at se detaljer.")
+            st.info("Indtast et gyldigt produktionsordre ID for at redigere eller slette.")
+
 
     # Manage Sales Orders
     elif management_option == "Salgsordrer":
@@ -448,166 +557,123 @@ if action == "Administrationsside":
                 "Batch ID": mb.batch_id,
                 "Mængde": mb.quantity,
                 "Enhed": mb.unit,
-                "Dato": mb.date.strftime("%Y-%m-%d")
+                "Dato": mb.date.strftime("%Y-%m-%d"),
+                "Tjekket": "Ja" if mb.checked else "Nej"
             })
         df = pd.DataFrame(batch_data)
         st.dataframe(df)
 
-    # Manage Production Orders
-    elif management_option == "Produktionsordrer":
-        production_orders = session.query(ProductionOrder).all()
-        production_data = []
-        for po in production_orders:
-            product = session.query(Product).filter_by(id=po.product_id).first()
-            production_data.append({
+    # Manage Purchase Orders
+    elif management_option == "Indkøbsordrer":
+        st.header("Indkøbsordrer")
+        purchase_orders = session.query(PurchaseOrder).all()
+        po_data = []
+        for po in purchase_orders:
+            supplier = session.query(Supplier).filter_by(id=po.supplier_id).first()
+            po_data.append({
                 "ID": po.id,
-                "Produkt": product.name if product else "Ukendt",
-                "Mængde": po.quantity,
-                "Batch ID": po.batch_id,
+                "Leverandør": supplier.name if supplier else "Ukendt",
                 "Dato": po.date.strftime("%Y-%m-%d"),
-                "Status": po.status
+                "Tjekket": "Ja" if po.checked else "Nej"
             })
-        df = pd.DataFrame(production_data)
+        df = pd.DataFrame(po_data)
         st.dataframe(df)
-    
-        st.subheader("Rediger eller slet produktionsordre")
-        selected_production_order_id = st.number_input("Indtast produktionsordre ID", min_value=1, step=1, key="selected_production_order_id")
-        selected_order = session.query(ProductionOrder).filter_by(id=selected_production_order_id).first()
-        if selected_order:
-            new_status = st.selectbox("Status", ["Afventer", "Afsluttet", "Annulleret"], index=["Afventer", "Afsluttet", "Annulleret"].index(selected_order.status))
-    
-            if st.button("Opdater produktionsordre"):
-                selected_order.status = new_status
+
+        st.subheader("Vis detaljer for en indkøbsordre")
+        selected_po_id = st.number_input("Indtast indkøbsordre ID", min_value=1, step=1, key="selected_po_id")
+        selected_po = session.query(PurchaseOrder).filter_by(id=selected_po_id).first()
+        if selected_po:
+            st.write(f"**Leverandør:** {selected_po.supplier_id}")
+            st.write(f"**Dato:** {selected_po.date}")
+            st.write(f"**Tjekket:** {'Ja' if selected_po.checked else 'Nej'}")
+            st.write("**Indkøbte materialer:**")
+            items = session.query(PurchaseOrderItem).filter_by(purchase_order_id=selected_po_id).all()
+            item_data = []
+            for item in items:
+                material = session.query(Material).filter_by(id=item.material_id).first()
+                item_data.append({
+                    "Materiale": material.name if material else "Ukendt",
+                    "Batch ID": item.batch_id,
+                    "Mængde": item.quantity,
+                    "Enhed": item.unit
+                })
+            item_df = pd.DataFrame(item_data)
+            st.dataframe(item_df)
+
+            st.subheader("Rediger eller slet indkøbsordre")
+            new_supplier_id = st.selectbox("Vælg ny leverandør", [(s.id, s.name) for s in session.query(Supplier).all()], index=selected_po.supplier_id - 1)
+            new_date = st.date_input("Ny dato", value=selected_po.date)
+            new_checked = st.checkbox("Vare modtaget og tjekket", value=selected_po.checked)
+
+            if st.button("Opdater indkøbsordre"):
                 try:
+                    selected_po.supplier_id = new_supplier_id
+                    selected_po.date = new_date
+                    selected_po.checked = new_checked
                     session.commit()
-                    st.success("Produktionsordre opdateret med succes!")
+                    st.success("Indkøbsordre opdateret med succes!")
                 except Exception as e:
                     session.rollback()
-                    st.error(f"Fejl under opdatering af produktionsordre: {str(e)}")
-    
-            if st.button("Slet produktionsordre"):
+                    st.error(f"Fejl under opdatering af indkøbsordre: {str(e)}")
+
+            if st.button("Slet indkøbsordre"):
                 confirm_delete = st.checkbox("Bekræft sletning")
                 if confirm_delete:
                     try:
-                        # Restore product quantity
-                        product = session.query(Product).filter_by(id=selected_order.product_id).first()
-                        product.quantity -= selected_order.quantity
-    
-                        # Delete product batch
-                        product_batch = session.query(ProductBatch).filter_by(batch_id=selected_order.batch_id).first()
-                        if product_batch:
-                            session.delete(product_batch)
-    
-                        # Restore materials/products used in production
-                        components_used = session.query(ProductionOrderComponent).filter_by(production_order_id=selected_production_order_id).all()
-                        for component in components_used:
-                            if component.component_material_id:
-                                # Material
-                                material = session.query(Material).filter_by(id=component.component_material_id).first()
-                                batch = session.query(MaterialBatch).filter_by(id=component.batch_id).first()
-                                # Increase batch quantity
-                                batch.quantity += component.quantity_used
-                                # Increase total material quantity
-                                material.quantity += convert_units(component.quantity_used, component.unit, material.unit)
-                            else:
-                                # Product
-                                product_comp = session.query(Product).filter_by(id=component.component_product_id).first()
-                                batch = session.query(ProductBatch).filter_by(id=component.batch_id).first()
-                                # Increase batch quantity
-                                batch.quantity += component.quantity_used
-                                # Increase total product quantity
-                                product_comp.quantity += convert_units(component.quantity_used, component.unit, product_comp.unit)
-    
-                            # Delete ProductionOrderComponent record
-                            session.delete(component)
-    
-                        # Delete the production order
-                        session.delete(selected_order)
-    
+                        # Restore material quantities
+                        for item in items:
+                            material = session.query(Material).filter_by(id=item.material_id).first()
+                            material.quantity -= convert_units(item.quantity, item.unit, material.unit)
+                            # Delete corresponding batches
+                            batch = session.query(MaterialBatch).filter_by(batch_id=item.batch_id).first()
+                            if batch:
+                                session.delete(batch)
+                            session.delete(item)
+                        session.delete(selected_po)
                         session.commit()
-                        st.success("Produktionsordre slettet og lager opdateret med succes!")
+                        st.success("Indkøbsordre og relaterede data slettet med succes!")
                     except Exception as e:
                         session.rollback()
-                        st.error(f"Fejl under sletning af produktionsordre: {str(e)}")
+                        st.error(f"Fejl under sletning af indkøbsordre: {str(e)}")
                 else:
-                    st.warning("Marker 'Bekræft sletning' for at slette produktionsordren.")
-        else:
-            st.info("Indtast et gyldigt produktionsordre ID for at redigere eller slette.")
+                    st.warning("Marker 'Bekræft sletning' for at slette indkøbsordren.")
 
-
-    # Manage Disposals
-    elif management_option == "Bortskaffelser":
-        disposals = session.query(DisposalRecord).all()
-        disposal_data = []
-        for d in disposals:
-            if d.material_id:
-                item = session.query(Material).filter_by(id=d.material_id).first()
-                item_name = item.name if item else "Ukendt"
-                item_type = "Materiale"
-                batch = session.query(MaterialBatch).filter_by(id=d.batch_id).first()
-            else:
-                item = session.query(Product).filter_by(id=d.product_id).first()
-                item_name = item.name if item else "Ukendt"
-                item_type = "Produkt"
-                batch = session.query(ProductBatch).filter_by(id=d.batch_id).first()
-            batch_name = batch.batch_id if batch else "Ukendt"
-            disposal_data.append({
-                "ID": d.id,
-                "Type": item_type,
-                "Navn": item_name,
-                "Batch ID": batch_name,
-                "Mængde": d.quantity,
-                "Enhed": d.unit,
-                "Årsag": d.reason,
-                "Dato": d.date.strftime("%Y-%m-%d")
-            })
-        df = pd.DataFrame(disposal_data)
-        st.dataframe(df)
-    
-        st.subheader("Slet bortskaffelsespost")
-        selected_disposal_id = st.number_input("Indtast bortskaffelses ID", min_value=1, step=1, key="selected_disposal_id")
-        selected_disposal = session.query(DisposalRecord).filter_by(id=selected_disposal_id).first()
-        if selected_disposal:
-            if st.button("Slet bortskaffelsespost"):
-                confirm_delete = st.checkbox("Bekræft sletning")
-                if confirm_delete:
-                    try:
-                        if selected_disposal.material_id:
-                            # Material
-                            material = session.query(Material).filter_by(id=selected_disposal.material_id).first()
-                            batch = session.query(MaterialBatch).filter_by(id=selected_disposal.batch_id).first()
-                            # Restore quantities
-                            batch.quantity += selected_disposal.quantity
-                            material.quantity += convert_units(selected_disposal.quantity, selected_disposal.unit, material.unit)
-                        else:
-                            # Product
-                            product = session.query(Product).filter_by(id=selected_disposal.product_id).first()
-                            batch = session.query(ProductBatch).filter_by(id=selected_disposal.batch_id).first()
-                            # Restore quantities
-                            batch.quantity += selected_disposal.quantity
-                            product.quantity += convert_units(selected_disposal.quantity, selected_disposal.unit, product.unit)
-    
-                        # Delete the disposal record
-                        session.delete(selected_disposal)
-    
-                        session.commit()
-                        st.success("Bortskaffelsespost slettet og lager opdateret med succes!")
-                    except Exception as e:
-                        session.rollback()
-                        st.error(f"Fejl under sletning af bortskaffelsespost: {str(e)}")
-                else:
-                    st.warning("Marker 'Bekræft sletning' for at slette bortskaffelsesposten.")
+            if st.button("Kopier indkøbsordre"):
+                try:
+                    new_po = PurchaseOrder(
+                        supplier_id=selected_po.supplier_id,
+                        date=datetime.now(),
+                        checked=selected_po.checked
+                    )
+                    session.add(new_po)
+                    session.flush()  # To get new_po.id
+                    for item in items:
+                        new_item = PurchaseOrderItem(
+                            purchase_order_id=new_po.id,
+                            material_id=item.material_id,
+                            batch_id=item.batch_id,
+                            quantity=item.quantity,
+                            unit=item.unit
+                        )
+                        session.add(new_item)
+                    session.commit()
+                    st.success(f"Indkøbsordre kopieret med ID {new_po.id}")
+                except Exception as e:
+                    session.rollback()
+                    st.error(f"Fejl under kopiering af indkøbsordre: {str(e)}")
         else:
-            st.info("Indtast et gyldigt bortskaffelses ID for at slette.")
+            st.info("Indtast et gyldigt indkøbsordre ID for at se detaljer.")
+    # Additional management options can be added here
 
 # Create a new material
 elif action == "Opret et nyt materiale":
     st.header("Opret et nyt materiale")
     material_name = st.text_input("Materialets navn")
+    producer_name = st.text_input("Producentnavn")
     unit = st.selectbox("Enhed", ["kg", "g", "l", "ml", "stk"], key="material_unit")
     if st.button("Tilføj materiale"):
         if material_name and unit:
-            new_material = Material(name=material_name, unit=unit)
+            new_material = Material(name=material_name, unit=unit, producer_name=producer_name)
             try:
                 session.add(new_material)
                 session.commit()
@@ -621,42 +687,94 @@ elif action == "Opret et nyt materiale":
 # Buy something
 elif action == "Køb noget":
     st.header("Indkøb til lager")
+    if 'purchase_order_items' not in st.session_state:
+        st.session_state.purchase_order_items = []
     suppliers = session.query(Supplier).all()
     if suppliers:
         supplier = st.selectbox("Vælg leverandør", [(s.id, s.name) for s in suppliers], key="buy_supplier")
+        supplier_id, supplier_name = supplier
+
+        st.subheader("Tilføj materialer til indkøbsordren")
+
         materials = session.query(Material).all()
         if materials:
-            material = st.selectbox("Vælg materiale", [(m.id, m.name) for m in materials], key="buy_material")
-            material_id, material_name = material
-            batch_id = st.text_input("Batch ID", key="buy_batch_id")
-            quantity = st.number_input("Indkøbt mængde", min_value=0.0, step=0.1, key="buy_quantity")
-            unit = st.selectbox("Enhed", ["kg", "g", "l", "ml", "stk"], key="buy_unit")
-            date = st.date_input("Dato for indkøb", datetime.now(), key="buy_date")
-            if st.button("Tilføj til lager", key="add_inventory"):
-                if batch_id.strip() == "":
-                    st.error("Batch ID er påkrævet.")
-                else:
-                    material = session.query(Material).filter_by(id=material_id).first()
-                    if material:
-                        try:
-                            converted_quantity = convert_units(quantity, unit, material.unit)
+            with st.form(key="add_purchase_item_form"):
+                material = st.selectbox("Vælg materiale", [(m.id, m.name) for m in materials], key="buy_material")
+                material_id, material_name = material
+                batch_id = st.text_input("Batch ID", key="buy_batch_id")
+                quantity = st.number_input("Indkøbt mængde", min_value=0.0, step=0.1, key="buy_quantity")
+                unit = st.selectbox("Enhed", ["kg", "g", "l", "ml", "stk"], key="buy_unit")
+                add_item_button = st.form_submit_button("Tilføj til indkøbsordre")
+
+                if add_item_button:
+                    if batch_id.strip() == "":
+                        st.error("Batch ID er påkrævet.")
+                    elif quantity <= 0:
+                        st.error("Mængden skal være større end 0.")
+                    else:
+                        st.session_state.purchase_order_items.append({
+                            'material_id': material_id,
+                            'material_name': material_name,
+                            'batch_id': batch_id,
+                            'quantity': quantity,
+                            'unit': unit
+                        })
+                        st.success(f"Materiale '{material_name}' tilføjet til indkøbsordren.")
+
+            # Display current purchase order items
+            if st.session_state.purchase_order_items:
+                st.subheader("Materialer i indkøbsordren")
+                po_items_df = pd.DataFrame(st.session_state.purchase_order_items)
+                st.dataframe(po_items_df[['material_name', 'batch_id', 'quantity', 'unit']])
+
+                checked = st.checkbox("Vare modtaget og tjekket")
+                date = st.date_input("Dato for indkøb", datetime.now(), key="buy_date")
+
+                if st.button("Afgiv indkøbsordre"):
+                    try:
+                        # Create PurchaseOrder
+                        new_purchase_order = PurchaseOrder(
+                            supplier_id=supplier_id,
+                            date=date,
+                            checked=checked
+                        )
+                        session.add(new_purchase_order)
+                        session.flush()  # to get new_purchase_order.id
+
+                        for item in st.session_state.purchase_order_items:
+                            # Create PurchaseOrderItem
+                            new_item = PurchaseOrderItem(
+                                purchase_order_id=new_purchase_order.id,
+                                material_id=item['material_id'],
+                                batch_id=item['batch_id'],
+                                quantity=item['quantity'],
+                                unit=item['unit']
+                            )
+                            session.add(new_item)
+
+                            # Update Material quantity
+                            material = session.query(Material).filter_by(id=item['material_id']).first()
+                            converted_quantity = convert_units(item['quantity'], item['unit'], material.unit)
                             material.quantity += converted_quantity
-                            # Create a new MaterialBatch record
+
+                            # Create MaterialBatch
                             new_batch = MaterialBatch(
-                                material_id=material_id,
-                                batch_id=batch_id,
-                                quantity=quantity,
-                                unit=unit,
-                                date=date
+                                material_id=item['material_id'],
+                                batch_id=item['batch_id'],
+                                quantity=item['quantity'],
+                                unit=item['unit'],
+                                date=date,
+                                checked=checked
                             )
                             session.add(new_batch)
-                            session.commit()
-                            st.success("Lager og batch opdateret med succes!")
-                        except Exception as e:
-                            session.rollback()
-                            st.error(f"Der opstod en fejl under opdatering af lager: {str(e)}")
-                    else:
-                        st.error("Materiale ikke fundet.")
+                        session.commit()
+                        st.success("Indkøbsordre oprettet og lager opdateret med succes!")
+                        st.session_state.purchase_order_items = []
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"Der opstod en fejl under oprettelse af indkøbsordren: {str(e)}")
+            else:
+                st.info("Tilføj materialer til indkøbsordren.")
         else:
             st.error("Ingen materialer tilgængelige for køb.")
     else:
@@ -677,142 +795,150 @@ elif action == "Producer noget":
         )
         product_id, product_name, product_quantity, product_unit = product
 
-        # Fetch BoM items for the selected product
-        bom_items = session.query(BoM).filter_by(product_id=product_id).all()
-
-        # Input for production quantity
-        quantity = st.number_input(
-            "Mængde der skal produceres",
-            min_value=1,
-            step=1,
-            key="produce_quantity"
-        )
-
-        # Input for new product batch ID
-        batch_id = st.text_input("Batch ID for det producerede produkt", key="produce_batch_id")
-
-        # Input for production date
-        date = st.date_input("Produktionsdato", datetime.now(), key="produce_date")
-
-        if not bom_items:
-            st.error("Ingen stykliste fundet for det valgte produkt.")
+        # Fetch Recipe for the selected product
+        recipe = session.query(Recipe).filter_by(product_id=product_id).first()
+        if not recipe:
+            st.error("Ingen opskrift fundet for det valgte produkt.")
         else:
-            st.subheader("Fordel komponenter fra batches")
-            sufficient_inventory = True
-            component_batches = {}
+            # Fetch BoM items for the recipe
+            bom_items = session.query(BoM).filter_by(recipe_id=recipe.id).all()
 
-            # Loop over each BoM item to allocate batches
-            for bom in bom_items:
-                required_total = bom.quantity_required * quantity
-                if bom.component_material_id:
-                    # Component is a material
-                    component = session.query(Material).filter_by(id=bom.component_material_id).first()
-                    component_name = component.name
-                    batches = session.query(MaterialBatch).filter_by(material_id=component.id).filter(MaterialBatch.quantity > 0).all()
-                else:
-                    # Component is a product
-                    component = session.query(Product).filter_by(id=bom.component_product_id).first()
-                    component_name = component.name
-                    batches = session.query(ProductBatch).filter_by(product_id=component.id).filter(ProductBatch.quantity > 0).all()
+            # Input for production quantity
+            quantity = st.number_input(
+                f"Mængde der skal produceres (Standard opskrift producerer {recipe.output_quantity} {product_unit})",
+                min_value=0.0,
+                step=0.1,
+                key="produce_quantity"
+            )
 
-                st.write(f"**Komponent: {component_name}**")
-                st.write(f"Samlet krævet mængde: {required_total} {bom.unit}")
+            # Input for new product batch ID
+            batch_id = st.text_input("Batch ID for det producerede produkt", key="produce_batch_id")
 
-                batch_allocations = {}
-                total_allocated = 0
+            # Input for production date
+            date = st.date_input("Produktionsdato", datetime.now(), key="produce_date")
 
-                if batches:
-                    st.write("Vælg batches og tildel mængder:")
-                    for batch in batches:
-                        available_quantity = convert_units(batch.quantity, batch.unit, bom.unit)
-                        allocation_key = f"allocation_{bom.id}_{batch.id}"
-                        allocated_quantity = st.number_input(
-                            f"Batch {batch.batch_id} - Tilgængelig: {available_quantity} {bom.unit}",
-                            min_value=0.0,
-                            max_value=available_quantity,
-                            step=0.1,
-                            key=allocation_key
-                        )
-                        total_allocated += allocated_quantity
-                        if allocated_quantity > 0:
-                            batch_allocations[batch.id] = allocated_quantity
+            if not bom_items:
+                st.error("Ingen stykliste fundet for det valgte produkt.")
+            else:
+                st.subheader("Fordel komponenter fra batches")
+                sufficient_inventory = True
+                component_batches = {}
 
-                    if total_allocated < required_total:
+                # Calculate scaling factor based on output quantity
+                scaling_factor = quantity / recipe.output_quantity if recipe.output_quantity != 0 else 1
+
+                # Loop over each BoM item to allocate batches
+                for bom in bom_items:
+                    required_total = bom.quantity_required * scaling_factor
+                    if bom.component_material_id:
+                        # Component is a material
+                        component = session.query(Material).filter_by(id=bom.component_material_id).first()
+                        component_name = component.name
+                        batches = session.query(MaterialBatch).filter_by(material_id=component.id).filter(MaterialBatch.quantity > 0).all()
+                    else:
+                        # Component is a product
+                        component = session.query(Product).filter_by(id=bom.component_product_id).first()
+                        component_name = component.name
+                        batches = session.query(ProductBatch).filter_by(product_id=component.id).filter(ProductBatch.quantity > 0).all()
+
+                    st.write(f"**Komponent: {component_name}**")
+                    st.write(f"Samlet krævet mængde: {required_total} {bom.unit}")
+
+                    batch_allocations = {}
+                    total_allocated = 0
+
+                    if batches:
+                        st.write("Vælg batches og tildel mængder:")
+                        for batch in batches:
+                            available_quantity = convert_units(batch.quantity, batch.unit, bom.unit)
+                            allocation_key = f"allocation_{bom.id}_{batch.id}"
+                            allocated_quantity = st.number_input(
+                                f"Batch {batch.batch_id} - Tilgængelig: {available_quantity} {bom.unit}",
+                                min_value=0.0,
+                                max_value=available_quantity,
+                                step=0.1,
+                                key=allocation_key
+                            )
+                            total_allocated += allocated_quantity
+                            if allocated_quantity > 0:
+                                batch_allocations[batch.id] = allocated_quantity
+
+                        if total_allocated < required_total:
+                            sufficient_inventory = False
+                            st.warning(f"Ikke nok af denne komponent i batchene. Tildelt: {total_allocated} {bom.unit}, Krævet: {required_total} {bom.unit}")
+                        component_batches[bom.id] = batch_allocations
+                    else:
+                        st.error("Ingen batches tilgængelige for denne komponent.")
                         sufficient_inventory = False
-                        st.warning(f"Ikke nok af denne komponent i batchene. Tildelt: {total_allocated} {bom.unit}, Krævet: {required_total} {bom.unit}")
-                    component_batches[bom.id] = batch_allocations
-                else:
-                    st.error("Ingen batches tilgængelige for denne komponent.")
-                    sufficient_inventory = False
 
-            if st.button("Opret produktionsordre", key="create_production"):
-                if batch_id.strip() == "":
-                    st.error("Batch ID er påkrævet.")
-                elif not sufficient_inventory:
-                    st.error("Der er ikke nok komponenter til at producere den ønskede mængde.")
-                else:
-                    try:
-                        # Add new production order with batch ID and date
-                        new_order = ProductionOrder(product_id=product_id, quantity=quantity, status='Afsluttet', batch_id=batch_id, date=date)
-                        session.add(new_order)
-                        session.flush()  # To get new_order.id before commit
+                if st.button("Opret produktionsordre", key="create_production"):
+                    if batch_id.strip() == "":
+                        st.error("Batch ID er påkrævet.")
+                    elif not sufficient_inventory:
+                        st.error("Der er ikke nok komponenter til at producere den ønskede mængde.")
+                    else:
+                        try:
+                            # Add new production order with batch ID and date
+                            new_order = ProductionOrder(product_id=product_id, quantity=quantity, status='Afsluttet', batch_id=batch_id, date=date)
+                            session.add(new_order)
+                            session.flush()  # To get new_order.id before commit
 
-                        # Deduct allocated quantities from batches and record usage
-                        for bom in bom_items:
-                            allocations = component_batches.get(bom.id, {})
-                            for batch_id_allocated, allocated_quantity in allocations.items():
-                                if bom.component_material_id:
-                                    batch = session.query(MaterialBatch).filter_by(id=batch_id_allocated).first()
-                                    batch_quantity_to_deduct = convert_units(allocated_quantity, bom.unit, batch.unit)
-                                    batch.quantity -= batch_quantity_to_deduct
-                                    # Update total material quantity
-                                    material = session.query(Material).filter_by(id=bom.component_material_id).first()
-                                    material.quantity -= batch_quantity_to_deduct
-                                    # Record batch usage
-                                    production_component = ProductionOrderComponent(
-                                        production_order_id=new_order.id,
-                                        component_material_id=bom.component_material_id,
-                                        batch_id=batch.id,
-                                        quantity_used=allocated_quantity,
-                                        unit=bom.unit
-                                    )
-                                    session.add(production_component)
-                                else:
-                                    batch = session.query(ProductBatch).filter_by(id=batch_id_allocated).first()
-                                    batch_quantity_to_deduct = convert_units(allocated_quantity, bom.unit, batch.unit)
-                                    batch.quantity -= batch_quantity_to_deduct
-                                    # Update total product quantity
-                                    product_component = session.query(Product).filter_by(id=bom.component_product_id).first()
-                                    product_component.quantity -= batch_quantity_to_deduct
-                                    # Record batch usage
-                                    production_component = ProductionOrderComponent(
-                                        production_order_id=new_order.id,
-                                        component_product_id=bom.component_product_id,
-                                        batch_id=batch.id,
-                                        quantity_used=allocated_quantity,
-                                        unit=bom.unit
-                                    )
-                                    session.add(production_component)
+                            # Deduct allocated quantities from batches and record usage
+                            for bom in bom_items:
+                                allocations = component_batches.get(bom.id, {})
+                                for batch_id_allocated, allocated_quantity in allocations.items():
+                                    if bom.component_material_id:
+                                        batch = session.query(MaterialBatch).filter_by(id=batch_id_allocated).first()
+                                        batch_quantity_to_deduct = convert_units(allocated_quantity, bom.unit, batch.unit)
+                                        batch.quantity -= batch_quantity_to_deduct
+                                        # Update total material quantity
+                                        material = session.query(Material).filter_by(id=bom.component_material_id).first()
+                                        material.quantity -= batch_quantity_to_deduct
+                                        # Record batch usage
+                                        production_component = ProductionOrderComponent(
+                                            production_order_id=new_order.id,
+                                            component_material_id=bom.component_material_id,
+                                            batch_id=batch.id,
+                                            quantity_used=allocated_quantity,
+                                            unit=bom.unit
+                                        )
+                                        session.add(production_component)
+                                    else:
+                                        batch = session.query(ProductBatch).filter_by(id=batch_id_allocated).first()
+                                        batch_quantity_to_deduct = convert_units(allocated_quantity, bom.unit, batch.unit)
+                                        batch.quantity -= batch_quantity_to_deduct
+                                        # Update total product quantity
+                                        product_component = session.query(Product).filter_by(id=bom.component_product_id).first()
+                                        product_component.quantity -= batch_quantity_to_deduct
+                                        # Record batch usage
+                                        production_component = ProductionOrderComponent(
+                                            production_order_id=new_order.id,
+                                            component_product_id=bom.component_product_id,
+                                            batch_id=batch.id,
+                                            quantity_used=allocated_quantity,
+                                            unit=bom.unit
+                                        )
+                                        session.add(production_component)
 
-                        # Update the produced product inventory
-                        product_to_update = session.query(Product).filter_by(id=product_id).first()
-                        product_to_update.quantity += quantity
+                            # Update the produced product inventory
+                            product_to_update = session.query(Product).filter_by(id=product_id).first()
+                            product_to_update.quantity += quantity
 
-                        # Create a new ProductBatch record
-                        new_product_batch = ProductBatch(
-                            product_id=product_id,
-                            batch_id=batch_id,
-                            quantity=quantity,
-                            unit=product_unit,
-                            date=date
-                        )
-                        session.add(new_product_batch)
+                            # Create a new ProductBatch record
+                            new_product_batch = ProductBatch(
+                                product_id=product_id,
+                                batch_id=batch_id,
+                                quantity=quantity,
+                                unit=product_unit,
+                                date=date
+                            )
+                            session.add(new_product_batch)
 
-                        session.commit()
-                        st.success("Produktion og batch oprettet med succes!")
-                    except Exception as e:
-                        session.rollback()
-                        st.error(f"Der opstod en fejl under afslutning af produktion: {str(e)}")
+                            session.commit()
+                            st.success("Produktion og batch oprettet med succes!")
+                        except Exception as e:
+                            session.rollback()
+                            st.error(f"Der opstod en fejl under afslutning af produktion: {str(e)}")
     else:
         st.error("Ingen produkter tilgængelige for produktion.")
 
@@ -848,10 +974,36 @@ elif action == "Opret en ny opskrift / stykliste":
     # Check if product has been created
     if 'product_id' in st.session_state:
         product_id = st.session_state['product_id']
-        st.subheader("2. Tilføj komponenter til stykliste")
+        st.subheader("2. Angiv opskriftsdetaljer")
+
+        method = st.text_area("Fremgangsmåde", key="recipe_method")
+        output_quantity = st.number_input("Mængde produceret af opskriften", min_value=0.0, step=0.1, key="recipe_output_quantity")
+
+        if st.button("Gem opskrift", key="save_recipe"):
+            if method and output_quantity > 0:
+                new_recipe = Recipe(
+                    product_id=product_id,
+                    method=method,
+                    output_quantity=output_quantity
+                )
+                try:
+                    session.add(new_recipe)
+                    session.commit()
+                    st.success("Opskrift gemt med succes!")
+                    st.session_state['recipe_id'] = new_recipe.id
+                except Exception as e:
+                    session.rollback()
+                    st.error(f"Der opstod en fejl under oprettelse af opskriften: {str(e)}")
+            else:
+                st.error("Udfyld venligst både fremgangsmåde og mængde.")
+
+    # Check if recipe has been created
+    if 'recipe_id' in st.session_state:
+        recipe_id = st.session_state['recipe_id']
+        st.subheader("3. Tilføj komponenter til stykliste")
 
         # Select component type: Material or Product
-        component_type = st.radio("Vælg komponenttype", options=["Materiale", "Produkt"])
+        component_type = st.radio("Vælg komponenttype", options=["Materiale", "Produkt"], key="component_type")
 
         if component_type == "Materiale":
             items = session.query(Material).all()
@@ -863,12 +1015,12 @@ elif action == "Opret en ny opskrift / stykliste":
 
         if items:
             with st.form(key="add_component_form"):
-                item = st.selectbox(f"Vælg {component_type.lower()}", item_options)
-                item_id, item_name = item
-                quantity_required = st.number_input(f"Krævet mængde for {item_name}", min_value=0.0, step=0.1)
-                unit = st.selectbox(f"Enhed for {item_name}", ["kg", "g", "l", "ml", "stk"])
+                component_item = st.selectbox(f"Vælg {component_type.lower()}", item_options, key="component_item")
+                quantity_required = st.number_input("Krævet mængde", min_value=0.0, step=0.1, key="quantity_required")
+                unit = st.selectbox("Enhed", ["kg", "g", "l", "ml", "stk"], key="component_unit")
                 add_component_button = st.form_submit_button("Tilføj komponent")
                 if add_component_button:
+                    item_id, item_name = component_item
                     if quantity_required == 0:
                         st.error("Mængden skal være større end 0.")
                     else:
@@ -899,19 +1051,19 @@ elif action == "Opret en ny opskrift / stykliste":
             st.dataframe(components_df[['component_type', 'item_name', 'quantity_required', 'unit']])
 
         # Button to finalize the BoM
-        if st.button("Afslut stykliste"):
+        if st.button("Afslut stykliste", key="finalize_bom"):
             try:
                 for component in st.session_state.bom_components:
                     if component["component_type"] == "Materiale":
                         new_bom = BoM(
-                            product_id=product_id,
+                            recipe_id=recipe_id,
                             component_material_id=component["item_id"],
                             quantity_required=component["quantity_required"],
                             unit=component["unit"]
                         )
                     else:
                         new_bom = BoM(
-                            product_id=product_id,
+                            recipe_id=recipe_id,
                             component_product_id=component["item_id"],
                             quantity_required=component["quantity_required"],
                             unit=component["unit"]
@@ -920,6 +1072,7 @@ elif action == "Opret en ny opskrift / stykliste":
                 session.commit()
                 st.session_state.bom_components = []
                 del st.session_state['product_id']  # Reset product_id after finishing BoM
+                del st.session_state['recipe_id']
                 st.success("Oprettelse af stykliste afsluttet med succes!")
             except Exception as e:
                 session.rollback()
@@ -987,7 +1140,7 @@ elif action == "Sælg noget":
 elif action == "Flyt noget":
     st.header("Lagerbevægelse")
 
-    # Implement move functionality if needed
+    st.info("Funktionen er under udvikling.")
 
 # Throw something out
 elif action == "Smid noget ud":
@@ -1140,6 +1293,7 @@ elif action == "Opret en ny leverandør":
     contact_email = st.text_input("Kontakt email")
     phone_number = st.text_input("Telefonnummer")
     vat_number = st.text_input("CVR-nummer")
+    organic_number = st.text_input("Økologinummer")  # New field for organic number
     if st.button("Tilføj leverandør"):
         if all([supplier_name, supplier_address, contact_email, phone_number, vat_number]):
             new_supplier = Supplier(
@@ -1147,7 +1301,8 @@ elif action == "Opret en ny leverandør":
                 address=supplier_address,
                 contact_email=contact_email,
                 phone_number=phone_number,
-                vat_number=vat_number
+                vat_number=vat_number,
+                organic_number=organic_number
             )
             try:
                 session.add(new_supplier)
