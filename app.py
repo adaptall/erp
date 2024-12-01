@@ -150,7 +150,10 @@ class PurchaseOrderItem(Base):
 import os
 
 # Path to the Azure certificate
-cert_path = os.path.join(os.path.dirname(__file__), "certs", "azure_cert.pem")
+cert_path = os.path.join(os.path.dirname(__file__), "certs", "DigiCertGlobalRootCA.crt.pem")
+
+if not os.path.exists(cert_path):
+    st.error("Certificate file not found. Please verify the path.")
 
 # Set up the database
 engine = create_engine(
