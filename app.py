@@ -1,6 +1,7 @@
 import streamlit as st
 from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Date, Boolean, Text, LargeBinary
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.dialects.mysql import LONGBLOB  # Import LONGBLOB for large binary data
 import pandas as pd
 import base64
 from PIL import Image
@@ -53,9 +54,9 @@ class Supplier(Base):
     phone_number = Column(String(20), nullable=False)
     vat_number = Column(String(20), nullable=False)
     organic_number = Column(String(80), nullable=True)
-    report_file = Column(LargeBinary, nullable=True)  # New field for supplier report file data
-    report_filename = Column(String(255), nullable=True)  # To store the file name
-    report_mimetype = Column(String(50), nullable=True)  # To store the MIME type
+    report_file = Column(LONGBLOB, nullable=True)
+    report_filename = Column(String(255), nullable=True)
+    report_mimetype = Column(String(50), nullable=True)
 
 class Recipe(Base):
     __tablename__ = 'recipe'
@@ -141,9 +142,9 @@ class PurchaseOrder(Base):
     supplier_id = Column(Integer, ForeignKey('supplier.id'), nullable=False)
     date = Column(Date, nullable=False)
     checked = Column(Boolean, default=False, nullable=False)
-    invoice_file = Column(LargeBinary, nullable=True)  # New field for invoice file data
-    invoice_filename = Column(String(255), nullable=True)  # To store the file name
-    invoice_mimetype = Column(String(50), nullable=True)  # To store the MIME type
+    invoice_file = Column(LONGBLOB, nullable=True)
+    invoice_filename = Column(String(255), nullable=True)
+    invoice_mimetype = Column(String(50), nullable=True)
     items = relationship('PurchaseOrderItem', backref='purchase_order')
 
 class PurchaseOrderItem(Base):
