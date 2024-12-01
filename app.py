@@ -10,18 +10,12 @@ from streamlit_option_menu import option_menu
 # Database setup
 Base = declarative_base()
 
-from dotenv import load_dotenv
-import os
-
-# Load environment variables
-load_dotenv()
-
 # Database credentials from environment variables
-db_user = os.getenv('DB_USER')
-db_password = os.getenv('DB_PASSWORD')
-db_host = os.getenv('DB_HOST')
-db_port = os.getenv('DB_PORT', '3306')  # Default MySQL port is 3306
-db_name = os.getenv('DB_NAME')
+db_user = st.secrets.key['DB_USER']
+db_password = st.secrets.key['DB_PASSWORD']
+db_host = st.secrets.key['DB_HOST']
+db_port = st.secrets.key['DB_PORT', '3306']  # Default MySQL port is 3306
+db_name = st.secrets.key['DB_NAME']
 
 class Product(Base):
     __tablename__ = 'product'
