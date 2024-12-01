@@ -1,7 +1,10 @@
 import streamlit as st
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Date, Boolean, Text
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Date, Boolean, Text, LargeBinary
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import pandas as pd
+import base64
+from PIL import Image
+import io
 from datetime import datetime
 
 # Import streamlit-option-menu
@@ -49,8 +52,10 @@ class Supplier(Base):
     contact_email = Column(String(80), nullable=False)
     phone_number = Column(String(20), nullable=False)
     vat_number = Column(String(20), nullable=False)
-    organic_number = Column(String(80), nullable=True)  # New field for organic number
-
+    organic_number = Column(String(80), nullable=True)
+    report_file = Column(LargeBinary, nullable=True)  # New field for supplier report file data
+    report_filename = Column(String(255), nullable=True)  # To store the file name
+    report_mimetype = Column(String(50), nullable=True)  # To store the MIME type
 
 class Recipe(Base):
     __tablename__ = 'recipe'
@@ -86,7 +91,7 @@ class ProductionOrderComponent(Base):
     batch_id = Column(Integer, nullable=False)  # Reference to MaterialBatch.id or ProductBatch.id
     quantity_used = Column(Float, nullable=False)
     unit = Column(String(20), nullable=False)
-    
+        
 class SalesOrder(Base):
     __tablename__ = 'sales_order'
     id = Column(Integer, primary_key=True)
@@ -136,6 +141,9 @@ class PurchaseOrder(Base):
     supplier_id = Column(Integer, ForeignKey('supplier.id'), nullable=False)
     date = Column(Date, nullable=False)
     checked = Column(Boolean, default=False, nullable=False)
+    invoice_file = Column(LargeBinary, nullable=True)  # New field for invoice file data
+    invoice_filename = Column(String(255), nullable=True)  # To store the file name
+    invoice_mimetype = Column(String(50), nullable=True)  # To store the MIME type
     items = relationship('PurchaseOrderItem', backref='purchase_order')
 
 class PurchaseOrderItem(Base):
@@ -265,7 +273,6 @@ if action == "Administrationsside":
         else:
             st.info("Indtast et gyldigt materiale ID for at redigere eller slette.")
 
-
     # Manage Products
     elif management_option == "Produkter":
         products = session.query(Product).all()
@@ -320,7 +327,6 @@ if action == "Administrationsside":
         else:
             st.info("Indtast et gyldigt produkt ID for at redigere eller slette.")
 
-
     # Manage Customers
     elif management_option == "Kunder":
         customers = session.query(Customer).all()
@@ -328,7 +334,48 @@ if action == "Administrationsside":
         df = pd.DataFrame(customer_options, columns=["ID", "Navn", "Adresse", "Kontakt Email", "Telefonnummer", "CVR-nummer"])
         st.dataframe(df)
 
-        # Editing and deleting customers can be added here if needed
+        st.subheader("Rediger eller slet kunde")
+        selected_customer_id = st.number_input("Indtast kunde ID", min_value=1, step=1, key="selected_customer_id")
+        selected_customer = session.query(Customer).filter_by(id=selected_customer_id).first()
+        if selected_customer:
+            new_name = st.text_input("Kundens navn", value=selected_customer.name)
+            new_address = st.text_input("Kundens adresse", value=selected_customer.address)
+            new_contact_email = st.text_input("Kontakt email", value=selected_customer.contact_email)
+            new_phone_number = st.text_input("Telefonnummer", value=selected_customer.phone_number)
+            new_vat_number = st.text_input("CVR-nummer", value=selected_customer.vat_number)
+    
+            if st.button("Opdater kunde"):
+                selected_customer.name = new_name
+                selected_customer.address = new_address
+                selected_customer.contact_email = new_contact_email
+                selected_customer.phone_number = new_phone_number
+                selected_customer.vat_number = new_vat_number
+                try:
+                    session.commit()
+                    st.success("Kunde opdateret med succes!")
+                except Exception as e:
+                    session.rollback()
+                    st.error(f"Fejl under opdatering af kunde: {str(e)}")
+    
+            if st.button("Slet kunde"):
+                confirm_delete = st.checkbox("Bekræft sletning")
+                if confirm_delete:
+                    try:
+                        # Check for dependencies, e.g., if customer has any sales orders
+                        sales_orders = session.query(SalesOrder).filter_by(customer_id=selected_customer_id).all()
+                        if sales_orders:
+                            st.error("Kan ikke slette kunden, da der er tilknyttede salgsordrer.")
+                        else:
+                            session.delete(selected_customer)
+                            session.commit()
+                            st.success("Kunde slettet med succes!")
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"Fejl under sletning af kunde: {str(e)}")
+                else:
+                    st.warning("Marker 'Bekræft sletning' for at slette kunden.")
+        else:
+            st.info("Indtast et gyldigt kunde ID for at redigere eller slette.")
 
     # Manage Suppliers
     elif management_option == "Leverandører":
@@ -337,7 +384,62 @@ if action == "Administrationsside":
         df = pd.DataFrame(supplier_options, columns=["ID", "Navn", "Adresse", "Kontakt Email", "Telefonnummer", "CVR-nummer", "Økologinummer"])
         st.dataframe(df)
 
-        # Editing and deleting suppliers can be added here if needed
+        st.subheader("Rediger eller slet leverandør")
+        selected_supplier_id = st.number_input("Indtast leverandør ID", min_value=1, step=1, key="selected_supplier_id")
+        selected_supplier = session.query(Supplier).filter_by(id=selected_supplier_id).first()
+        if selected_supplier:
+            new_name = st.text_input("Leverandørens navn", value=selected_supplier.name)
+            new_address = st.text_input("Leverandørens adresse", value=selected_supplier.address)
+            new_contact_email = st.text_input("Kontakt email", value=selected_supplier.contact_email)
+            new_phone_number = st.text_input("Telefonnummer", value=selected_supplier.phone_number)
+            new_vat_number = st.text_input("CVR-nummer", value=selected_supplier.vat_number)
+            new_organic_number = st.text_input("Økologinummer", value=selected_supplier.organic_number or "")
+
+            # File uploader for supplier report
+            report_file = st.file_uploader("Upload ny leverandørrapport (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="edit_supplier_report")
+            report_file_data = selected_supplier.report_file  # Keep existing data
+            report_filename = selected_supplier.report_filename
+            report_mimetype = selected_supplier.report_mimetype
+            if report_file is not None:
+                report_file_data = report_file.read()
+                report_filename = report_file.name
+                report_mimetype = report_file.type
+
+            if st.button("Opdater leverandør"):
+                selected_supplier.name = new_name
+                selected_supplier.address = new_address
+                selected_supplier.contact_email = new_contact_email
+                selected_supplier.phone_number = new_phone_number
+                selected_supplier.vat_number = new_vat_number
+                selected_supplier.organic_number = new_organic_number
+                selected_supplier.report_file = report_file_data
+                selected_supplier.report_filename = report_filename
+                selected_supplier.report_mimetype = report_mimetype
+                try:
+                    session.commit()
+                    st.success("Leverandør opdateret med succes!")
+                except Exception as e:
+                    session.rollback()
+                    st.error(f"Fejl under opdatering af leverandør: {str(e)}")
+
+            # Display the supplier report
+            if selected_supplier.report_file:
+                st.write("**Leverandørrapport:**")
+                if selected_supplier.report_mimetype == 'application/pdf':
+                    # Display PDF in iframe
+                    b64_pdf = base64.b64encode(selected_supplier.report_file).decode('utf-8')
+                    pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="700" height="1000" type="application/pdf"></iframe>'
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                elif selected_supplier.report_mimetype.startswith('image/'):
+                    # Display image
+                    image = Image.open(io.BytesIO(selected_supplier.report_file))
+                    st.image(image)
+                else:
+                    st.download_button("Download rapport", data=selected_supplier.report_file, file_name=selected_supplier.report_filename, mime=selected_supplier.report_mimetype)
+            else:
+                st.write("Ingen leverandørrapport uploadet.")
+        else:
+            st.info("Indtast et gyldigt leverandør ID for at redigere eller slette.")
 
     # Manage Bill of Materials (BoM)
     elif management_option == "Styklister (BoM)":
@@ -384,9 +486,8 @@ if action == "Administrationsside":
         else:
             st.info("Indtast et gyldigt stykliste ID for at slette.")
 
-
     # Manage Production Orders
-    if management_option == "Produktionsordrer":
+    elif management_option == "Produktionsordrer":
         production_orders = session.query(ProductionOrder).all()
         production_data = []
         for po in production_orders:
@@ -510,7 +611,6 @@ if action == "Administrationsside":
         else:
             st.info("Indtast et gyldigt produktionsordre ID for at redigere eller slette.")
 
-
     # Manage Sales Orders
     elif management_option == "Salgsordrer":
         sales_orders = session.query(SalesOrder).all()
@@ -567,7 +667,6 @@ if action == "Administrationsside":
         else:
             st.info("Indtast et gyldigt salgsordre ID for at redigere eller slette.")
 
-
     # Manage Material Batches
     elif management_option == "Materiale Batches":
         material_batches = session.query(MaterialBatch).all()
@@ -582,6 +681,23 @@ if action == "Administrationsside":
                 "Enhed": mb.unit,
                 "Dato": mb.date.strftime("%Y-%m-%d"),
                 "Tjekket": "Ja" if mb.checked else "Nej"
+            })
+        df = pd.DataFrame(batch_data)
+        st.dataframe(df)
+
+    # Manage Product Batches
+    elif management_option == "Produkt Batches":
+        product_batches = session.query(ProductBatch).all()
+        batch_data = []
+        for pb in product_batches:
+            product = session.query(Product).filter_by(id=pb.product_id).first()
+            batch_data.append({
+                "ID": pb.id,
+                "Produkt": product.name if product else "Ukendt",
+                "Batch ID": pb.batch_id,
+                "Mængde": pb.quantity,
+                "Enhed": pb.unit,
+                "Dato": pb.date.strftime("%Y-%m-%d")
             })
         df = pd.DataFrame(batch_data)
         st.dataframe(df)
@@ -606,7 +722,8 @@ if action == "Administrationsside":
         selected_po_id = st.number_input("Indtast indkøbsordre ID", min_value=1, step=1, key="selected_po_id")
         selected_po = session.query(PurchaseOrder).filter_by(id=selected_po_id).first()
         if selected_po:
-            st.write(f"**Leverandør:** {selected_po.supplier_id}")
+            supplier = session.query(Supplier).filter_by(id=selected_po.supplier_id).first()
+            st.write(f"**Leverandør:** {supplier.name if supplier else 'Ukendt'}")
             st.write(f"**Dato:** {selected_po.date}")
             st.write(f"**Tjekket:** {'Ja' if selected_po.checked else 'Nej'}")
             st.write("**Indkøbte materialer:**")
@@ -623,16 +740,48 @@ if action == "Administrationsside":
             item_df = pd.DataFrame(item_data)
             st.dataframe(item_df)
 
+            # Display the invoice file
+            if selected_po.invoice_file:
+                st.write("**Faktura:**")
+                if selected_po.invoice_mimetype == 'application/pdf':
+                    # Display PDF in iframe
+                    b64_pdf = base64.b64encode(selected_po.invoice_file).decode('utf-8')
+                    pdf_display = f'<iframe src="data:application/pdf;base64,{b64_pdf}" width="700" height="1000" type="application/pdf"></iframe>'
+                    st.markdown(pdf_display, unsafe_allow_html=True)
+                elif selected_po.invoice_mimetype.startswith('image/'):
+                    # Display image
+                    image = Image.open(io.BytesIO(selected_po.invoice_file))
+                    st.image(image)
+                else:
+                    st.download_button("Download faktura", data=selected_po.invoice_file, file_name=selected_po.invoice_filename, mime=selected_po.invoice_mimetype)
+            else:
+                st.write("Ingen faktura uploadet.")
+
             st.subheader("Rediger eller slet indkøbsordre")
-            new_supplier_id = st.selectbox("Vælg ny leverandør", [(s.id, s.name) for s in session.query(Supplier).all()], index=selected_po.supplier_id - 1)
+            supplier_options = [(s.id, s.name) for s in session.query(Supplier).all()]
+            selected_supplier_index = next((index for (index, s) in enumerate(supplier_options) if s[0] == selected_po.supplier_id), 0)
+            new_supplier_id = st.selectbox("Vælg ny leverandør", supplier_options, index=selected_supplier_index)
             new_date = st.date_input("Ny dato", value=selected_po.date)
             new_checked = st.checkbox("Vare modtaget og tjekket", value=selected_po.checked)
+
+            # File uploader for updating the invoice
+            invoice_file = st.file_uploader("Upload ny faktura (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="edit_invoice_file")
+            invoice_file_data = selected_po.invoice_file  # Keep existing data
+            invoice_filename = selected_po.invoice_filename
+            invoice_mimetype = selected_po.invoice_mimetype
+            if invoice_file is not None:
+                invoice_file_data = invoice_file.read()
+                invoice_filename = invoice_file.name
+                invoice_mimetype = invoice_file.type
 
             if st.button("Opdater indkøbsordre"):
                 try:
                     selected_po.supplier_id = new_supplier_id
                     selected_po.date = new_date
                     selected_po.checked = new_checked
+                    selected_po.invoice_file = invoice_file_data
+                    selected_po.invoice_filename = invoice_filename
+                    selected_po.invoice_mimetype = invoice_mimetype
                     session.commit()
                     st.success("Indkøbsordre opdateret med succes!")
                 except Exception as e:
@@ -661,49 +810,35 @@ if action == "Administrationsside":
                 else:
                     st.warning("Marker 'Bekræft sletning' for at slette indkøbsordren.")
 
-            if st.button("Kopier indkøbsordre"):
-                try:
-                    new_po = PurchaseOrder(
-                        supplier_id=selected_po.supplier_id,
-                        date=datetime.now(),
-                        checked=selected_po.checked
-                    )
-                    session.add(new_po)
-                    session.flush()  # To get new_po.id
-                    for item in items:
-                        new_item = PurchaseOrderItem(
-                            purchase_order_id=new_po.id,
-                            material_id=item.material_id,
-                            batch_id=item.batch_id,
-                            quantity=item.quantity,
-                            unit=item.unit
+                if st.button("Kopier indkøbsordre"):
+                    try:
+                        new_po = PurchaseOrder(
+                            supplier_id=selected_po.supplier_id,
+                            date=datetime.now(),
+                            checked=selected_po.checked,
+                            invoice_file=selected_po.invoice_file,
+                            invoice_filename=selected_po.invoice_filename,
+                            invoice_mimetype=selected_po.invoice_mimetype
                         )
-                        session.add(new_item)
-                    session.commit()
-                    st.success(f"Indkøbsordre kopieret med ID {new_po.id}")
-                except Exception as e:
-                    session.rollback()
-                    st.error(f"Fejl under kopiering af indkøbsordre: {str(e)}")
+                        session.add(new_po)
+                        session.flush()  # To get new_po.id
+                        for item in items:
+                            new_item = PurchaseOrderItem(
+                                purchase_order_id=new_po.id,
+                                material_id=item.material_id,
+                                batch_id=item.batch_id,
+                                quantity=item.quantity,
+                                unit=item.unit
+                            )
+                            session.add(new_item)
+                        session.commit()
+                        st.success(f"Indkøbsordre kopieret med ID {new_po.id}")
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"Fejl under kopiering af indkøbsordre: {str(e)}")
         else:
             st.info("Indtast et gyldigt indkøbsordre ID for at se detaljer.")
 
-    # Manage Product Batches
-    elif management_option == "Produkt Batches":
-        product_batches = session.query(ProductBatch).all()
-        batch_data = []
-        for pb in product_batches:
-            product = session.query(Product).filter_by(id=pb.product_id).first()
-            batch_data.append({
-                "ID": pb.id,
-                "Produkt": product.name if product else "Ukendt",
-                "Batch ID": pb.batch_id,
-                "Mængde": pb.quantity,
-                "Enhed": pb.unit,
-                "Dato": pb.date.strftime("%Y-%m-%d")
-            })
-        df = pd.DataFrame(batch_data)
-        st.dataframe(df)
-        
 # Create a new material
 elif action == "Opret et nyt materiale":
     st.header("Opret et nyt materiale")
@@ -769,13 +904,28 @@ elif action == "Køb noget":
                 checked = st.checkbox("Vare modtaget og tjekket")
                 date = st.date_input("Dato for indkøb", datetime.now(), key="buy_date")
 
+                # Add file uploader for invoice
+                invoice_file = st.file_uploader("Upload faktura (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="invoice_file")
+
                 if st.button("Afgiv indkøbsordre"):
                     try:
-                        # Create PurchaseOrder
+                        # Read the invoice file data
+                        invoice_file_data = None
+                        invoice_filename = None
+                        invoice_mimetype = None
+                        if invoice_file is not None:
+                            invoice_file_data = invoice_file.read()
+                            invoice_filename = invoice_file.name
+                            invoice_mimetype = invoice_file.type  # MIME type
+
+                        # Create PurchaseOrder with invoice file data
                         new_purchase_order = PurchaseOrder(
                             supplier_id=supplier_id,
                             date=date,
-                            checked=checked
+                            checked=checked,
+                            invoice_file=invoice_file_data,
+                            invoice_filename=invoice_filename,
+                            invoice_mimetype=invoice_mimetype
                         )
                         session.add(new_purchase_order)
                         session.flush()  # to get new_purchase_order.id
@@ -1296,7 +1446,6 @@ elif action == "Smid noget ud":
         else:
             st.error("Ingen produkter tilgængelige.")
 
-
 # Create a new customer
 elif action == "Opret en ny kunde":
     st.header("Opret en ny kunde")
@@ -1333,15 +1482,30 @@ elif action == "Opret en ny leverandør":
     phone_number = st.text_input("Telefonnummer")
     vat_number = st.text_input("CVR-nummer")
     organic_number = st.text_input("Økologinummer")  # New field for organic number
+    # Add file uploader for supplier report
+    report_file = st.file_uploader("Upload leverandørrapport (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="supplier_report")
+
     if st.button("Tilføj leverandør"):
         if all([supplier_name, supplier_address, contact_email, phone_number, vat_number]):
+            # Read the report file data
+            report_file_data = None
+            report_filename = None
+            report_mimetype = None
+            if report_file is not None:
+                report_file_data = report_file.read()
+                report_filename = report_file.name
+                report_mimetype = report_file.type  # MIME type
+
             new_supplier = Supplier(
                 name=supplier_name,
                 address=supplier_address,
                 contact_email=contact_email,
                 phone_number=phone_number,
                 vat_number=vat_number,
-                organic_number=organic_number
+                organic_number=organic_number,
+                report_file=report_file_data,
+                report_filename=report_filename,
+                report_mimetype=report_mimetype
             )
             try:
                 session.add(new_supplier)
