@@ -2,3 +2,5 @@ streamlit
 sqlalchemy
 streamlit_option_menu
 pymysql
+pillow
+pandas
