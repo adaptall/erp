@@ -147,12 +147,17 @@ class PurchaseOrderItem(Base):
     quantity = Column(Float, nullable=False)
     unit = Column(String(20), nullable=False)
 
+import os
+
+# Path to the Azure certificate
+cert_path = os.path.join(os.path.dirname(__file__), "certs", "azure_cert.pem")
+
 # Set up the database
 engine = create_engine(
     f'mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}',
     connect_args={
         'ssl': {
-            'ssl_ca': 'C:/Users/avict/OneDrive/Skrivebord/DigiCertGlobalRootCA.crt.pem'
+            'ssl_ca': cert_path
         }
     }
 )
