@@ -14,7 +14,7 @@ Base = declarative_base()
 db_user = st.secrets['DB_USER']
 db_password = st.secrets['DB_PASSWORD']
 db_host = st.secrets['DB_HOST']
-db_port = st.secrets['DB_PORT', '3306']  # Default MySQL port is 3306
+db_port = st.secrets['DB_PORT']  # Default MySQL port is 3306
 db_name = st.secrets['DB_NAME']
 
 class Product(Base):
