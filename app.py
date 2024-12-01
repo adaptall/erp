@@ -1,5 +1,5 @@
 import streamlit as st
-from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Date, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Float, ForeignKey, Date, Boolean, Text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import pandas as pd
 from datetime import datetime
@@ -10,11 +10,24 @@ from streamlit_option_menu import option_menu
 # Database setup
 Base = declarative_base()
 
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
+
+# Database credentials from environment variables
+db_user = os.getenv('DB_USER')
+db_password = os.getenv('DB_PASSWORD')
+db_host = os.getenv('DB_HOST')
+db_port = os.getenv('DB_PORT', '3306')  # Default MySQL port is 3306
+db_name = os.getenv('DB_NAME')
+
 class Product(Base):
     __tablename__ = 'product'
     id = Column(Integer, primary_key=True)
     name = Column(String(80), nullable=False)
-    quantity = Column(Float, default=0.0)
+    quantity = Column(Float, default=0.0, nullable=False)
     unit = Column(String(20), nullable=False, default='stk')
 
 class Material(Base):
@@ -23,7 +36,7 @@ class Material(Base):
     name = Column(String(80), nullable=False)
     producer_name = Column(String(80), nullable=True)  # New field for producer name
     unit = Column(String(20), nullable=False)
-    quantity = Column(Float, default=0.0)
+    quantity = Column(Float, default=0.0, nullable=False)
 
 class Customer(Base):
     __tablename__ = 'customer'
@@ -44,11 +57,12 @@ class Supplier(Base):
     vat_number = Column(String(20), nullable=False)
     organic_number = Column(String(80), nullable=True)  # New field for organic number
 
+
 class Recipe(Base):
     __tablename__ = 'recipe'
     id = Column(Integer, primary_key=True)
     product_id = Column(Integer, ForeignKey('product.id'), nullable=False)
-    method = Column(String, nullable=True)  # Longer text field for method
+    method = Column(Text, nullable=True)  # Use Text for longer text fields
     output_quantity = Column(Float, nullable=False)
 
 class BoM(Base):
@@ -65,7 +79,7 @@ class ProductionOrder(Base):
     id = Column(Integer, primary_key=True)
     product_id = Column(Integer, ForeignKey('product.id'), nullable=False)
     quantity = Column(Float, nullable=False)
-    status = Column(String(20), default='Afventer')
+    status = Column(String(20), default='Afventer', nullable=False)
     batch_id = Column(String(80), nullable=False)
     date = Column(Date, nullable=False)
 
@@ -85,7 +99,7 @@ class SalesOrder(Base):
     product_id = Column(Integer, ForeignKey('product.id'), nullable=False)
     customer_id = Column(Integer, ForeignKey('customer.id'), nullable=False)
     quantity = Column(Float, nullable=False)
-    status = Column(String(20), default='Afventer')
+    status = Column(String(20), default='Afventer', nullable=False)
     date = Column(Date, nullable=False)
 
 # New table for Material Batches
@@ -97,7 +111,7 @@ class MaterialBatch(Base):
     quantity = Column(Float, nullable=False)
     unit = Column(String(20), nullable=False)
     date = Column(Date, nullable=False)
-    checked = Column(Boolean, default=False)  # New field for checked status
+    checked = Column(Boolean, default=False, nullable=False)
 
 # New table for Product Batches
 class ProductBatch(Base):
@@ -127,7 +141,7 @@ class PurchaseOrder(Base):
     id = Column(Integer, primary_key=True)
     supplier_id = Column(Integer, ForeignKey('supplier.id'), nullable=False)
     date = Column(Date, nullable=False)
-    checked = Column(Boolean, default=False)
+    checked = Column(Boolean, default=False, nullable=False)
     items = relationship('PurchaseOrderItem', backref='purchase_order')
 
 class PurchaseOrderItem(Base):
@@ -140,7 +154,14 @@ class PurchaseOrderItem(Base):
     unit = Column(String(20), nullable=False)
 
 # Set up the database
-engine = create_engine('sqlite:///erp.db')
+engine = create_engine(
+    f'mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}',
+    connect_args={
+        'ssl': {
+            'ssl_ca': 'C:/Users/avict/OneDrive/Skrivebord/DigiCertGlobalRootCA.crt.pem'
+        }
+    }
+)
 Base.metadata.create_all(engine)
 DBSession = sessionmaker(bind=engine)
 session = DBSession()
@@ -663,8 +684,24 @@ if action == "Administrationsside":
                     st.error(f"Fejl under kopiering af indkøbsordre: {str(e)}")
         else:
             st.info("Indtast et gyldigt indkøbsordre ID for at se detaljer.")
-    # Additional management options can be added here
 
+    # Manage Product Batches
+    elif management_option == "Produkt Batches":
+        product_batches = session.query(ProductBatch).all()
+        batch_data = []
+        for pb in product_batches:
+            product = session.query(Product).filter_by(id=pb.product_id).first()
+            batch_data.append({
+                "ID": pb.id,
+                "Produkt": product.name if product else "Ukendt",
+                "Batch ID": pb.batch_id,
+                "Mængde": pb.quantity,
+                "Enhed": pb.unit,
+                "Dato": pb.date.strftime("%Y-%m-%d")
+            })
+        df = pd.DataFrame(batch_data)
+        st.dataframe(df)
+        
 # Create a new material
 elif action == "Opret et nyt materiale":
     st.header("Opret et nyt materiale")
