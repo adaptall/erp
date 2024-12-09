@@ -206,6 +206,46 @@ def get_all_material_batches():
 def get_all_product_batches():
     return session.query(ProductBatch).all()
 
+def refresh_materials():
+    get_all_materials.clear()
+    st.session_state.materials = get_all_materials()
+
+def refresh_products():
+    get_all_products.clear()
+    st.session_state.products = get_all_products()
+
+def refresh_customers():
+    get_all_customers.clear()
+    st.session_state.customers = get_all_customers()
+
+def refresh_suppliers():
+    get_all_suppliers.clear()
+    st.session_state.suppliers = get_all_suppliers()
+
+def refresh_boms():
+    get_all_boms.clear()
+    st.session_state.boms = get_all_boms()
+
+def refresh_production_orders():
+    get_all_production_orders.clear()
+    st.session_state.production_orders = get_all_production_orders()
+
+def refresh_sales_orders():
+    get_all_sales_orders.clear()
+    st.session_state.sales_orders = get_all_sales_orders()
+
+def refresh_purchase_orders():
+    get_all_purchase_orders.clear()
+    st.session_state.purchase_orders = get_all_purchase_orders()
+
+def refresh_material_batches():
+    get_all_material_batches.clear()
+    st.session_state.material_batches = get_all_material_batches()
+
+def refresh_product_batches():
+    get_all_product_batches.clear()
+    st.session_state.product_batches = get_all_product_batches()
+
 def convert_units(quantity, from_unit, to_unit):
     conversion_factors = {
         ('kg', 'g'): 1000,
@@ -296,7 +336,7 @@ if action == "Administrationsside":
                     db_material.quantity = new_quantity
                     db_material.producer_name = new_producer_name
                     session.commit()
-                    st.session_state.materials = get_all_materials()
+                    refresh_materials()
                     st.success("Materiale opdateret med succes!")
                 except Exception as e:
                     session.rollback()
@@ -319,7 +359,7 @@ if action == "Administrationsside":
                         else:
                             session.delete(db_material)
                             session.commit()
-                            st.session_state.materials = get_all_materials()
+                            refresh_materials()
                             st.success("Materiale slettet med succes!")
                 except Exception as e:
                     session.rollback()
@@ -345,7 +385,7 @@ if action == "Administrationsside":
                     db_product.unit = new_unit
                     db_product.quantity = new_quantity
                     session.commit()
-                    st.session_state.products = get_all_products()
+                    refresh_products()
                     st.success("Produkt opdateret med succes!")
                 except Exception as e:
                     session.rollback()
@@ -370,7 +410,7 @@ if action == "Administrationsside":
                             db_product = session.query(Product).filter_by(id=selected_product_id).first()
                             session.delete(db_product)
                             session.commit()
-                            st.session_state.products = get_all_products()
+                            refresh_products()
                             st.success("Produkt slettet med succes!")
                 except Exception as e:
                     session.rollback()
@@ -400,7 +440,7 @@ if action == "Administrationsside":
                     db_customer.phone_number = new_phone_number
                     db_customer.vat_number = new_vat_number
                     session.commit()
-                    st.session_state.customers = get_all_customers()
+                    refresh_customers()
                     st.success("Kunde opdateret med succes!")
                 except Exception as e:
                     session.rollback()
@@ -418,7 +458,7 @@ if action == "Administrationsside":
                         db_customer = session.query(Customer).filter_by(id=selected_customer_id).first()
                         session.delete(db_customer)
                         session.commit()
-                        st.session_state.customers = get_all_customers()
+                        refresh_customers()
                         st.success("Kunde slettet med succes!")
                 except Exception as e:
                     session.rollback()
@@ -461,7 +501,7 @@ if action == "Administrationsside":
                     db_supplier.report_filename = report_filename
                     db_supplier.report_mimetype = report_mimetype
                     session.commit()
-                    st.session_state.suppliers = get_all_suppliers()
+                    refresh_suppliers()
                     st.success("Leverandør opdateret med succes!")
                 except Exception as e:
                     session.rollback()
@@ -520,7 +560,7 @@ if action == "Administrationsside":
                     db_bom = session.query(BoM).filter_by(id=selected_bom_id).first()
                     session.delete(db_bom)
                     session.commit()
-                    st.session_state.boms = get_all_boms()
+                    refresh_boms()
                     st.success("Styklistepost slettet med succes!")
                 except Exception as e:
                     session.rollback()
@@ -565,8 +605,8 @@ if action == "Administrationsside":
                     db_order.quantity = new_quantity
                     db_order.product_id = new_product_id
                     session.commit()
-                    st.session_state.products = get_all_products()
-                    st.session_state.production_orders = get_all_production_orders()
+                    refresh_products()
+                    refresh_production_orders()
                     st.success("Produktionsordre opdateret med succes!")
                 except Exception as e:
                     session.rollback()
@@ -598,10 +638,10 @@ if action == "Administrationsside":
                         session.delete(component)
                     session.delete(db_order)
                     session.commit()
-                    st.session_state.materials = get_all_materials()
-                    st.session_state.products = get_all_products()
-                    st.session_state.production_orders = get_all_production_orders()
-                    st.session_state.product_batches = get_all_product_batches()
+                    refresh_materials()
+                    refresh_products()
+                    refresh_production_orders()
+                    refresh_product_batches()
                     st.success("Produktionsordre slettet og lager opdateret med succes!")
                 except Exception as e:
                     session.rollback()
@@ -638,7 +678,7 @@ if action == "Administrationsside":
                     db_so = session.query(SalesOrder).filter_by(id=selected_sales_order_id).first()
                     db_so.status = new_status
                     session.commit()
-                    st.session_state.sales_orders = get_all_sales_orders()
+                    refresh_sales_orders()
                     st.success("Salgsordre opdateret med succes!")
                 except Exception as e:
                     session.rollback()
@@ -654,8 +694,8 @@ if action == "Administrationsside":
                     product.quantity += db_so.quantity
                     session.delete(db_so)
                     session.commit()
-                    st.session_state.sales_orders = get_all_sales_orders()
-                    st.session_state.products = get_all_products()
+                    refresh_sales_orders()
+                    refresh_products()
                     st.success("Salgsordre slettet og lager opdateret med succes!")
                 except Exception as e:
                     session.rollback()
@@ -771,7 +811,7 @@ if action == "Administrationsside":
                     db_po.invoice_filename = invoice_filename
                     db_po.invoice_mimetype = invoice_mimetype
                     session.commit()
-                    st.session_state.purchase_orders = get_all_purchase_orders()
+                    refresh_purchase_orders()
                     st.success("Indkøbsordre opdateret med succes!")
                 except Exception as e:
                     session.rollback()
@@ -793,9 +833,9 @@ if action == "Administrationsside":
                         session.delete(item)
                     session.delete(db_po)
                     session.commit()
-                    st.session_state.materials = get_all_materials()
-                    st.session_state.purchase_orders = get_all_purchase_orders()
-                    st.session_state.material_batches = get_all_material_batches()
+                    refresh_materials()
+                    refresh_purchase_orders()
+                    refresh_material_batches()
                     st.success("Indkøbsordre og relaterede data slettet med succes!")
                 except Exception as e:
                     session.rollback()
@@ -827,7 +867,7 @@ if action == "Administrationsside":
                         )
                         session.add(new_item)
                     session.commit()
-                    st.session_state.purchase_orders = get_all_purchase_orders()
+                    refresh_purchase_orders()
                     st.success(f"Indkøbsordre kopieret med ID {new_po.id}")
                 except Exception as e:
                     session.rollback()
@@ -846,7 +886,7 @@ elif action == "Opret et nyt materiale":
             try:
                 session.add(new_material)
                 session.commit()
-                st.session_state.materials = get_all_materials()
+                refresh_materials()
                 st.success("Materiale tilføjet med succes!")
             except Exception as e:
                 session.rollback()
@@ -937,9 +977,9 @@ elif action == "Køb noget":
                             )
                             session.add(new_batch)
                         session.commit()
-                        st.session_state.materials = get_all_materials()
-                        st.session_state.purchase_orders = get_all_purchase_orders()
-                        st.session_state.material_batches = get_all_material_batches()
+                        refresh_materials()
+                        refresh_purchase_orders()
+                        refresh_material_batches()
                         st.success("Indkøbsordre oprettet og lager opdateret med succes!")
                         st.session_state.purchase_order_items = []
                     except Exception as e:
@@ -992,10 +1032,8 @@ elif action == "Producer noget":
                     for bom in bom_items:
                         required_total = bom.quantity_required * scaling_factor
                         if bom.component_material_id:
-                            component = material_map.get(bom.component_material_id, None)
                             batches = session.query(MaterialBatch).filter_by(material_id=bom.component_material_id).filter(MaterialBatch.quantity > 0).all()
                         else:
-                            component = product_map.get(bom.component_product_id, None)
                             batches = session.query(ProductBatch).filter_by(product_id=bom.component_product_id).filter(ProductBatch.quantity > 0).all()
                         total_allocated = 0
                         batch_allocations = {}
@@ -1063,10 +1101,10 @@ elif action == "Producer noget":
                             )
                             session.add(new_product_batch)
                             session.commit()
-                            st.session_state.materials = get_all_materials()
-                            st.session_state.products = get_all_products()
-                            st.session_state.product_batches = get_all_product_batches()
-                            st.session_state.production_orders = get_all_production_orders()
+                            refresh_materials()
+                            refresh_products()
+                            refresh_product_batches()
+                            refresh_production_orders()
                             st.success("Produktion og batch oprettet med succes!")
                         except Exception as e:
                             session.rollback()
@@ -1089,7 +1127,7 @@ elif action == "Opret en ny opskrift / stykliste":
             try:
                 session.add(new_product)
                 session.commit()
-                st.session_state.products = get_all_products()
+                refresh_products()
                 st.success(f"Produkt '{product_name}' oprettet med succes!")
                 st.session_state['product_id'] = new_product.id
             except Exception as e:
@@ -1190,7 +1228,7 @@ elif action == "Opret en ny opskrift / stykliste":
                         )
                     session.add(new_bom)
                 session.commit()
-                st.session_state.boms = get_all_boms()
+                refresh_boms()
                 st.session_state.bom_components = []
                 del st.session_state['product_id']
                 del st.session_state['recipe_id']
@@ -1198,8 +1236,7 @@ elif action == "Opret en ny opskrift / stykliste":
             except Exception as e:
                 session.rollback()
                 st.error(f"Der opstod en fejl under tilføjelse af stykliste: {str(e)}")
-                
-             
+
 elif action == "Sælg noget":
     st.header("Salgsstyring")
     products = st.session_state.products
@@ -1235,8 +1272,8 @@ elif action == "Sælg noget":
                     session.add(new_sales_order)
                     try:
                         session.commit()
-                        st.session_state.products = get_all_products()
-                        st.session_state.sales_orders = get_all_sales_orders()
+                        refresh_products()
+                        refresh_sales_orders()
                         st.success("Salgsordre oprettet med succes!")
                     except Exception as e:
                         session.rollback()
@@ -1295,8 +1332,8 @@ elif action == "Smid noget ud":
                             )
                             session.add(disposal_record)
                             session.commit()
-                            st.session_state.materials = get_all_materials()
-                            st.session_state.material_batches = get_all_material_batches()
+                            refresh_materials()
+                            refresh_material_batches()
                             st.success("Bortskaffelse registreret med succes!")
                         except Exception as e:
                             session.rollback()
@@ -1345,8 +1382,8 @@ elif action == "Smid noget ud":
                             )
                             session.add(disposal_record)
                             session.commit()
-                            st.session_state.products = get_all_products()
-                            st.session_state.product_batches = get_all_product_batches()
+                            refresh_products()
+                            refresh_product_batches()
                             st.success("Bortskaffelse registreret med succes!")
                         except Exception as e:
                             session.rollback()
@@ -1377,7 +1414,7 @@ elif action == "Opret en ny kunde":
             try:
                 session.add(new_customer)
                 session.commit()
-                st.session_state.customers = get_all_customers()
+                refresh_customers()
                 st.success("Kunde tilføjet med succes!")
             except Exception as e:
                 session.rollback()
@@ -1419,7 +1456,7 @@ elif action == "Opret en ny leverandør":
             try:
                 session.add(new_supplier)
                 session.commit()
-                st.session_state.suppliers = get_all_suppliers()
+                refresh_suppliers()
                 st.success("Leverandør tilføjet med succes!")
             except Exception as e:
                 session.rollback()
