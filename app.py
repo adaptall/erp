@@ -94,11 +94,18 @@ class ProductionOrderComponent(Base):
 class SalesOrder(Base):
     __tablename__ = 'sales_order'
     id = Column(Integer, primary_key=True)
-    product_id = Column(Integer, ForeignKey('product.id'), nullable=False)
     customer_id = Column(Integer, ForeignKey('customer.id'), nullable=False)
-    quantity = Column(Float, nullable=False)
     status = Column(String(20), default='Afventer', nullable=False)
     date = Column(Date, nullable=False)
+    items = relationship('SalesOrderItem', backref='sales_order', cascade="all,delete-orphan")
+
+class SalesOrderItem(Base):
+    __tablename__ = 'sales_order_item'
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey('sales_order.id'), nullable=False)
+    product_id = Column(Integer, ForeignKey('product.id'), nullable=False)
+    quantity = Column(Float, nullable=False)
+    unit = Column(String(20), nullable=False)
 
 class MaterialBatch(Base):
     __tablename__ = 'material_batch'
@@ -1263,49 +1270,175 @@ elif action == "Opret en ny opskrift / stykliste":
 
 elif action == "Sælg noget":
     st.header("Salgsstyring")
+
     products = st.session_state.products
-    if products:
-        product = st.selectbox(
-            "Vælg produkt til salg",
-            [(p.id, p.name, p.quantity, p.unit) for p in products],
-            format_func=lambda x: f"{x[1]} (Tilgængelig: {x[2]} {x[3]})",
-            key="sale_product"
-        )
-        product_id, product_name, product_quantity, product_unit = product
-        customers = st.session_state.customers
-        if customers:
-            customer = st.selectbox("Vælg kunde", [(c.id, c.name) for c in customers], key="sales_customer")
-            customer_id, customer_name = customer
-            unit = st.selectbox("Vælg enhed for salg", ["kg", "g", "l", "ml", "stk"], key="sale_unit")
-            quantity = st.number_input("Mængde solgt", min_value=0.0, step=0.1, key="sale_quantity")
-            date = st.date_input("Salgsdato", datetime.now(), key="sale_date")
-            if st.button("Opret salgsordre", key="create_sales_order"):
-                converted_quantity = convert_units(quantity, unit, product_unit)
-                product_to_update = session.query(Product).filter_by(id=product_id).first()
-                if product_to_update and product_to_update.quantity >= converted_quantity:
-                    product_to_update.quantity -= converted_quantity
-                    new_sales_order = SalesOrder(
-                        product_id=product_id,
-                        customer_id=customer_id,
-                        quantity=quantity,
-                        status='Afsluttet',
-                        date=date
-                    )
-                    session.add(new_sales_order)
-                    try:
-                        session.commit()
-                        refresh_products()
-                        refresh_sales_orders()
-                        st.success("Salgsordre oprettet med succes!")
-                    except Exception as e:
-                        session.rollback()
-                        st.error(f"Der opstod en fejl under oprettelse af salgsordren: {str(e)}")
-                else:
-                    st.error("Ikke nok lager til at opfylde ordren.")
-        else:
-            st.error("Ingen kunder tilgængelige. Tilføj venligst en kunde først.")
-    else:
+    if not products:
         st.error("Ingen produkter tilgængelige for salg.")
+    else:
+        # Multi-select for choosing multiple products to sell
+        selected_products = st.multiselect(
+            "Vælg produkt(er) til salg",
+            [(p.id, p.name, p.quantity, p.unit) for p in products],
+            format_func=lambda x: f"{x[1]} (Tilgængelig: {x[2]} {x[3]})"
+        )
+
+        if selected_products:
+            # A dictionary to store desired sale quantities by product_id
+            desired_quantities = {}
+            with st.form("sales_product_selection_form"):
+                st.write("Angiv ønsket salgsmængde for hvert produkt:")
+                for prod_id, prod_name, prod_qty, prod_unit in selected_products:
+                    unit_options = ["kg", "g", "l", "ml", "stk"]
+                    selected_unit = st.selectbox(f"Enhed for {prod_name}", unit_options, key=f"sale_unit_{prod_id}")
+                    input_qty = st.number_input(f"Mængde for {prod_name}", min_value=0.0, step=0.1, key=f"sale_qty_{prod_id}")
+                    desired_quantities[prod_id] = (input_qty, selected_unit)
+                proceed_to_batches = st.form_submit_button("Vælg batches")
+
+            if proceed_to_batches:
+                # Fetch customers
+                customers = st.session_state.customers
+                if not customers:
+                    st.error("Ingen kunder tilgængelige. Tilføj venligst en kunde først.")
+                else:
+                    # Select customer and date
+                    customer = st.selectbox("Vælg kunde", [(c.id, c.name) for c in customers], key="sales_customer")
+                    customer_id, customer_name = customer
+                    sale_date = st.date_input("Salgsdato", datetime.now(), key="sale_date")
+
+                    st.subheader("Fordel salgsmængder fra batches")
+
+                    # We'll store batch allocations in a structure similar to production
+                    product_allocations = {}
+                    sufficient_inventory = True
+
+                    for prod_id, (req_qty, req_unit) in desired_quantities.items():
+                        if req_qty <= 0:
+                            st.warning(f"Ingen mængde angivet for produkt ID {prod_id}, springer over.")
+                            continue
+                        # Find the product and its batches
+                        product_obj = next((p for p in products if p.id == prod_id), None)
+                        if not product_obj:
+                            st.error(f"Produkt med ID {prod_id} findes ikke længere.")
+                            sufficient_inventory = False
+                            continue
+                        # Convert the required quantity to the product's native unit
+                        converted_required = convert_units(req_qty, req_unit, product_obj.unit)
+                        if converted_required > product_obj.quantity:
+                            st.error(f"Ikke nok lager for {product_obj.name}. Krævet: {converted_required} {product_obj.unit}, Tilgængeligt: {product_obj.quantity} {product_obj.unit}")
+                            sufficient_inventory = False
+
+                        # Get available batches
+                        available_batches = [b for b in st.session_state.product_batches if b.product_id == prod_id and b.quantity > 0]
+                        if not available_batches:
+                            st.error(f"Ingen batches tilgængelige for {product_obj.name}.")
+                            sufficient_inventory = False
+                            continue
+
+                        st.write(f"**{product_obj.name}** - Krævet: {req_qty} {req_unit} ({converted_required} {product_obj.unit})")
+                        product_allocations[prod_id] = []
+
+                        # Let user allocate from multiple batches
+                        total_allocated = 0.0
+                        for batch in available_batches:
+                            # Convert batch quantity to the requested unit for display
+                            available_converted = convert_units(batch.quantity, batch.unit, product_obj.unit)
+                            allocate_key = f"allocate_{prod_id}_{batch.id}"
+                            alloc_qty = st.number_input(
+                                f"Batch {batch.batch_id} - Tilgængelig: {available_converted} {product_obj.unit}", 
+                                min_value=0.0, 
+                                max_value=available_converted, 
+                                step=0.1, 
+                                key=allocate_key
+                            )
+                            if alloc_qty > 0:
+                                product_allocations[prod_id].append({
+                                    'batch_id': batch.id,
+                                    'allocated_quantity': alloc_qty,
+                                    'product_unit': product_obj.unit,
+                                    'batch_unit': batch.unit
+                                })
+                                total_allocated += alloc_qty
+
+                        # Check if allocated enough for this product
+                        if total_allocated < converted_required:
+                            st.warning(f"Ikke nok batchallokering for {product_obj.name}. Tildelt: {total_allocated} {product_obj.unit}, Krævet: {converted_required} {product_obj.unit}")
+                            sufficient_inventory = False
+
+                    # After setting all allocations, confirm order creation
+                    if st.button("Opret salgsordre", key="create_sales_order"):
+                        if not sufficient_inventory:
+                            st.error("Kan ikke oprette salgsordre, da der ikke er tilstrækkelig batchallokering.")
+                        else:
+                            try:
+                                # Create SalesOrder (assuming you don't have a SalesOrderItem table,
+                                # you can create one similar to PurchaseOrderItem)
+                                new_sales_order = SalesOrder(
+                                    product_id=None,  # This field won't be used if we create line items
+                                    customer_id=customer_id,
+                                    quantity=0,  # Not used if we have multiple line items
+                                    status='Afsluttet',
+                                    date=sale_date
+                                )
+                                session.add(new_sales_order)
+                                session.flush()
+
+                                # If you haven't defined SalesOrderItem yet, define it similarly:
+                                # class SalesOrderItem(Base):
+                                #     __tablename__ = 'sales_order_item'
+                                #     id = Column(Integer, primary_key=True)
+                                #     sales_order_id = Column(Integer, ForeignKey('sales_order.id'), nullable=False)
+                                #     product_id = Column(Integer, ForeignKey('product.id'), nullable=False)
+                                #     quantity = Column(Float, nullable=False)
+                                #     unit = Column(String(20), nullable=False)
+                                #
+                                # Make sure to create the table in your DB and reflect changes.
+
+                                # Now process each product and its allocations
+                                for prod_id, (req_qty, req_unit) in desired_quantities.items():
+                                    product_obj = next((p for p in products if p.id == prod_id), None)
+                                    if not product_obj or req_qty <= 0:
+                                        # Skip products with zero quantity
+                                        continue
+                                    converted_required = convert_units(req_qty, req_unit, product_obj.unit)
+
+                                    # Create a SalesOrderItem record for each product
+                                    # sum allocated quantities in product_obj.unit
+                                    total_allocated_in_native = 0.0
+                                    for alloc in product_allocations.get(prod_id, []):
+                                        total_allocated_in_native += alloc['allocated_quantity']
+
+                                    new_line = SalesOrder(  # or SalesOrderItem if you have it
+                                        product_id=prod_id,
+                                        customer_id=customer_id,
+                                        quantity=req_qty,   # In requested unit
+                                        status='Afsluttet',
+                                        date=sale_date
+                                    )
+                                    session.add(new_line)
+                                    session.flush()
+
+                                    # Deduct product quantity and update batches
+                                    product_obj.quantity -= total_allocated_in_native
+
+                                    for alloc in product_allocations[prod_id]:
+                                        batch = session.query(ProductBatch).filter_by(id=alloc['batch_id']).first()
+                                        # Convert allocated_quantity back to the batch's unit
+                                        deduct_qty = convert_units(alloc['allocated_quantity'], product_obj.unit, batch.unit)
+                                        batch.quantity -= deduct_qty
+                                        # If you need a record of which batch was sold, create a corresponding table
+                                        # to store these details, similar to ProductionOrderComponent or PurchaseOrderItem.
+
+                                session.commit()
+                                refresh_products()
+                                refresh_product_batches()
+                                refresh_sales_orders()
+                                st.success("Salgsordre oprettet med succes!")
+                            except Exception as e:
+                                session.rollback()
+                                st.error(f"Der opstod en fejl under oprettelse af salgsordren: {str(e)}")
+        else:
+            st.info("Vælg mindst ét produkt for at fortsætte.")
+
 
 elif action == "Flyt noget":
     st.header("Lagerbevægelse")
