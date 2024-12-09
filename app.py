@@ -12,6 +12,7 @@ import os
 
 Base = declarative_base()
 
+# Database credentials
 db_user = st.secrets['DB_USER']
 db_password = st.secrets['DB_PASSWORD']
 db_host = st.secrets['DB_HOST']
@@ -150,15 +151,16 @@ class PurchaseOrderItem(Base):
     unit = Column(String(20), nullable=False)
 
 cert_path = os.path.join(os.path.dirname(__file__), "certs", "DigiCertGlobalRootCA.crt.pem")
+if not os.path.exists(cert_path):
+    st.error("Certificate file not found. Please verify the path.")
+
 engine = create_engine(
     f'mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}',
     connect_args={
         'ssl': {
             'ssl_ca': cert_path
         }
-    },
-    pool_size=5,
-    max_overflow=10
+    }
 )
 Base.metadata.create_all(engine)
 DBSession = sessionmaker(bind=engine)
@@ -166,6 +168,7 @@ session = DBSession()
 
 st.set_page_config(layout="wide")
 
+# Caching functions
 @st.cache_data(show_spinner=False)
 def get_all_materials():
     return session.query(Material).all()
@@ -257,25 +260,7 @@ def convert_units(quantity, from_unit, to_unit):
         return quantity
     return quantity * conversion_factors.get((from_unit, to_unit), 1)
 
-with st.sidebar:
-    st.title("ERP System")
-    st.header("Handlinger")
-    action = option_menu(
-        menu_title=None,
-        options=[
-            "Opret et nyt materiale", "Køb noget", "Producer noget", "Opret en ny opskrift / stykliste",
-            "Sælg noget", "Flyt noget", "Smid noget ud", "Opret en ny kunde", "Opret en ny leverandør", "Administrationsside"
-        ],
-        icons=[
-            "file-plus", "cart-plus", "gear", "clipboard",
-            "cart", "arrows-move", "trash", "person-plus", "truck", "tools"
-        ],
-        menu_icon="cast",
-        default_index=0,
-    )
-
-st.header("ERP System")
-
+# Initialize session state
 if "materials" not in st.session_state:
     st.session_state.materials = get_all_materials()
 
@@ -306,6 +291,25 @@ if "material_batches" not in st.session_state:
 if "product_batches" not in st.session_state:
     st.session_state.product_batches = get_all_product_batches()
 
+with st.sidebar:
+    st.title("ERP System")
+    st.header("Handlinger")
+    action = option_menu(
+        menu_title=None,
+        options=[
+            "Opret et nyt materiale", "Køb noget", "Producer noget", "Opret en ny opskrift / stykliste",
+            "Sælg noget", "Flyt noget", "Smid noget ud", "Opret en ny kunde", "Opret en ny leverandør", "Administrationsside"
+        ],
+        icons=[
+            "file-plus", "cart-plus", "gear", "clipboard",
+            "cart", "arrows-move", "trash", "person-plus", "truck", "tools"
+        ],
+        menu_icon="cast",
+        default_index=0,
+    )
+
+st.header("ERP System")
+
 if action == "Administrationsside":
     st.header("Administrationsside")
     management_option = st.selectbox(
@@ -313,28 +317,28 @@ if action == "Administrationsside":
         ["Materialer", "Produkter", "Kunder", "Leverandører", "Styklister (BoM)", "Produktionsordrer", "Salgsordrer", "Indkøbsordrer", "Materiale Batches", "Produkt Batches"]
     )
 
+    # Manage Materials
     if management_option == "Materialer":
-        materials = st.session_state.materials
+        materials = session.query(Material).all()
         material_options = [(m.id, m.name, m.quantity, m.unit, m.producer_name) for m in materials]
         df = pd.DataFrame(material_options, columns=["ID", "Navn", "Mængde", "Enhed", "Producentnavn"])
         st.dataframe(df)
-        selected_material_id = st.number_input("Indtast materiale ID", min_value=1, step=1, key="selected_material_id")
-        selected_material = next((m for m in materials if m.id == selected_material_id), None)
-        if selected_material:
-            with st.form("update_material_form"):
-                new_name = st.text_input("Materialets navn", value=selected_material.name)
-                new_unit = st.selectbox("Enhed", ["kg", "g", "l", "ml", "stk"], index=["kg", "g", "l", "ml", "stk"].index(selected_material.unit))
-                new_quantity = st.number_input("Mængde", min_value=0.0, step=0.1, value=selected_material.quantity)
-                new_producer_name = st.text_input("Producentnavn", value=selected_material.producer_name or "")
-                update_material = st.form_submit_button("Opdater materiale")
 
-            if update_material:
+        st.subheader("Rediger eller slet materiale")
+        selected_material_id = st.number_input("Indtast materiale ID", min_value=1, step=1, key="selected_material_id")
+        selected_material = session.query(Material).filter_by(id=selected_material_id).first()
+        if selected_material:
+            new_name = st.text_input("Materialets navn", value=selected_material.name)
+            new_unit = st.selectbox("Enhed", ["kg", "g", "l", "ml", "stk"], index=["kg", "g", "l", "ml", "stk"].index(selected_material.unit))
+            new_quantity = st.number_input("Mængde", min_value=0.0, step=0.1, value=selected_material.quantity)
+            new_producer_name = st.text_input("Producentnavn", value=selected_material.producer_name or "")
+
+            if st.button("Opdater materiale"):
+                selected_material.name = new_name
+                selected_material.unit = new_unit
+                selected_material.quantity = new_quantity
+                selected_material.producer_name = new_producer_name
                 try:
-                    db_material = session.query(Material).filter_by(id=selected_material_id).first()
-                    db_material.name = new_name
-                    db_material.unit = new_unit
-                    db_material.quantity = new_quantity
-                    db_material.producer_name = new_producer_name
                     session.commit()
                     refresh_materials()
                     st.success("Materiale opdateret med succes!")
@@ -342,48 +346,49 @@ if action == "Administrationsside":
                     session.rollback()
                     st.error(f"Fejl under opdatering af materiale: {str(e)}")
 
-            with st.form("delete_material_form"):
-                delete_material = st.form_submit_button("Slet materiale")
+            if st.button("Slet materiale"):
                 confirm_delete = st.checkbox("Bekræft sletning")
-
-            if delete_material and confirm_delete:
-                try:
-                    db_material = session.query(Material).filter_by(id=selected_material_id).first()
-                    bom_entries = session.query(BoM).filter_by(component_material_id=selected_material_id).all()
-                    if bom_entries:
-                        st.error("Kan ikke slette materialet, da det bruges i en stykliste.")
-                    else:
-                        material_batches = session.query(MaterialBatch).filter_by(material_id=selected_material_id).all()
-                        if material_batches:
-                            st.error("Kan ikke slette materialet, da der er tilknyttede batches.")
+                if confirm_delete:
+                    try:
+                        bom_entries = session.query(BoM).filter_by(component_material_id=selected_material_id).all()
+                        if bom_entries:
+                            st.error("Kan ikke slette materialet, da det bruges i en stykliste.")
                         else:
-                            session.delete(db_material)
-                            session.commit()
-                            refresh_materials()
-                            st.success("Materiale slettet med succes!")
-                except Exception as e:
-                    session.rollback()
-                    st.error(f"Fejl under sletning af materiale: {str(e)}")
+                            material_batches = session.query(MaterialBatch).filter_by(material_id=selected_material_id).all()
+                            if material_batches:
+                                st.error("Kan ikke slette materialet, da der er tilknyttede batches.")
+                            else:
+                                session.delete(selected_material)
+                                session.commit()
+                                refresh_materials()
+                                st.success("Materiale slettet med succes!")
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"Fejl under sletning af materiale: {str(e)}")
+                else:
+                    st.warning("Marker 'Bekræft sletning' for at slette materialet.")
+        else:
+            st.info("Indtast et gyldigt materiale ID for at redigere eller slette.")
 
     elif management_option == "Produkter":
-        products = st.session_state.products
+        products = session.query(Product).all()
         product_options = [(p.id, p.name, p.quantity, p.unit) for p in products]
         df = pd.DataFrame(product_options, columns=["ID", "Navn", "Mængde", "Enhed"])
         st.dataframe(df)
+
+        st.subheader("Rediger eller slet produkt")
         selected_product_id = st.number_input("Indtast produkt ID", min_value=1, step=1, key="selected_product_id")
-        selected_product = next((p for p in products if p.id == selected_product_id), None)
+        selected_product = session.query(Product).filter_by(id=selected_product_id).first()
         if selected_product:
-            with st.form("update_product_form"):
-                new_name = st.text_input("Produktnavn", value=selected_product.name)
-                new_unit = st.selectbox("Enhed", ["kg", "g", "l", "ml", "stk"], index=["kg", "g", "l", "ml", "stk"].index(selected_product.unit))
-                new_quantity = st.number_input("Mængde", min_value=0.0, step=0.1, value=selected_product.quantity)
-                update_product = st.form_submit_button("Opdater produkt")
-            if update_product:
+            new_name = st.text_input("Produktnavn", value=selected_product.name)
+            new_unit = st.selectbox("Enhed", ["kg", "g", "l", "ml", "stk"], index=["kg", "g", "l", "ml", "stk"].index(selected_product.unit))
+            new_quantity = st.number_input("Mængde", min_value=0.0, step=0.1, value=selected_product.quantity)
+
+            if st.button("Opdater produkt"):
+                selected_product.name = new_name
+                selected_product.unit = new_unit
+                selected_product.quantity = new_quantity
                 try:
-                    db_product = session.query(Product).filter_by(id=selected_product_id).first()
-                    db_product.name = new_name
-                    db_product.unit = new_unit
-                    db_product.quantity = new_quantity
                     session.commit()
                     refresh_products()
                     st.success("Produkt opdateret med succes!")
@@ -391,54 +396,56 @@ if action == "Administrationsside":
                     session.rollback()
                     st.error(f"Fejl under opdatering af produkt: {str(e)}")
 
-            with st.form("delete_product_form"):
-                delete_product = st.form_submit_button("Slet produkt")
+            if st.button("Slet produkt"):
                 confirm_delete = st.checkbox("Bekræft sletning")
-            if delete_product and confirm_delete:
-                try:
-                    bom_entries = session.query(BoM).filter(
-                        (BoM.component_product_id == selected_product_id) | (BoM.recipe_id == selected_product_id)
-                    ).all()
-                    production_orders = session.query(ProductionOrder).filter_by(product_id=selected_product_id).all()
-                    if bom_entries or production_orders:
-                        st.error("Kan ikke slette produktet, da det bruges i en stykliste eller produktionsordre.")
-                    else:
-                        product_batches = session.query(ProductBatch).filter_by(product_id=selected_product_id).all()
-                        if product_batches:
-                            st.error("Kan ikke slette produktet, da der er tilknyttede batches.")
+                if confirm_delete:
+                    try:
+                        bom_entries = session.query(BoM).filter(
+                            (BoM.component_product_id == selected_product_id) | (BoM.recipe_id == selected_product_id)
+                        ).all()
+                        production_orders = session.query(ProductionOrder).filter_by(product_id=selected_product_id).all()
+                        if bom_entries or production_orders:
+                            st.error("Kan ikke slette produktet, da det bruges i en stykliste eller produktionsordre.")
                         else:
-                            db_product = session.query(Product).filter_by(id=selected_product_id).first()
-                            session.delete(db_product)
-                            session.commit()
-                            refresh_products()
-                            st.success("Produkt slettet med succes!")
-                except Exception as e:
-                    session.rollback()
-                    st.error(f"Fejl under sletning af produkt: {str(e)}")
+                            product_batches = session.query(ProductBatch).filter_by(product_id=selected_product_id).all()
+                            if product_batches:
+                                st.error("Kan ikke slette produktet, da der er tilknyttede batches.")
+                            else:
+                                session.delete(selected_product)
+                                session.commit()
+                                refresh_products()
+                                st.success("Produkt slettet med succes!")
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"Fejl under sletning af produkt: {str(e)}")
+                else:
+                    st.warning("Marker 'Bekræft sletning' for at slette produktet.")
+        else:
+            st.info("Indtast et gyldigt produkt ID for at redigere eller slette.")
 
     elif management_option == "Kunder":
-        customers = st.session_state.customers
+        customers = session.query(Customer).all()
         customer_options = [(c.id, c.name, c.address, c.contact_email, c.phone_number, c.vat_number) for c in customers]
         df = pd.DataFrame(customer_options, columns=["ID", "Navn", "Adresse", "Kontakt Email", "Telefonnummer", "CVR-nummer"])
         st.dataframe(df)
+
+        st.subheader("Rediger eller slet kunde")
         selected_customer_id = st.number_input("Indtast kunde ID", min_value=1, step=1, key="selected_customer_id")
-        selected_customer = next((c for c in customers if c.id == selected_customer_id), None)
+        selected_customer = session.query(Customer).filter_by(id=selected_customer_id).first()
         if selected_customer:
-            with st.form("update_customer_form"):
-                new_name = st.text_input("Kundens navn", value=selected_customer.name)
-                new_address = st.text_input("Kundens adresse", value=selected_customer.address)
-                new_contact_email = st.text_input("Kontakt email", value=selected_customer.contact_email)
-                new_phone_number = st.text_input("Telefonnummer", value=selected_customer.phone_number)
-                new_vat_number = st.text_input("CVR-nummer", value=selected_customer.vat_number)
-                update_customer = st.form_submit_button("Opdater kunde")
-            if update_customer:
+            new_name = st.text_input("Kundens navn", value=selected_customer.name)
+            new_address = st.text_input("Kundens adresse", value=selected_customer.address)
+            new_contact_email = st.text_input("Kontakt email", value=selected_customer.contact_email)
+            new_phone_number = st.text_input("Telefonnummer", value=selected_customer.phone_number)
+            new_vat_number = st.text_input("CVR-nummer", value=selected_customer.vat_number)
+
+            if st.button("Opdater kunde"):
+                selected_customer.name = new_name
+                selected_customer.address = new_address
+                selected_customer.contact_email = new_contact_email
+                selected_customer.phone_number = new_phone_number
+                selected_customer.vat_number = new_vat_number
                 try:
-                    db_customer = session.query(Customer).filter_by(id=selected_customer_id).first()
-                    db_customer.name = new_name
-                    db_customer.address = new_address
-                    db_customer.contact_email = new_contact_email
-                    db_customer.phone_number = new_phone_number
-                    db_customer.vat_number = new_vat_number
                     session.commit()
                     refresh_customers()
                     st.success("Kunde opdateret med succes!")
@@ -446,41 +453,44 @@ if action == "Administrationsside":
                     session.rollback()
                     st.error(f"Fejl under opdatering af kunde: {str(e)}")
 
-            with st.form("delete_customer_form"):
-                delete_customer = st.form_submit_button("Slet kunde")
+            if st.button("Slet kunde"):
                 confirm_delete = st.checkbox("Bekræft sletning")
-            if delete_customer and confirm_delete:
-                try:
-                    sales_orders = session.query(SalesOrder).filter_by(customer_id=selected_customer_id).all()
-                    if sales_orders:
-                        st.error("Kan ikke slette kunden, da der er tilknyttede salgsordrer.")
-                    else:
-                        db_customer = session.query(Customer).filter_by(id=selected_customer_id).first()
-                        session.delete(db_customer)
-                        session.commit()
-                        refresh_customers()
-                        st.success("Kunde slettet med succes!")
-                except Exception as e:
-                    session.rollback()
-                    st.error(f"Fejl under sletning af kunde: {str(e)}")
+                if confirm_delete:
+                    try:
+                        sales_orders = session.query(SalesOrder).filter_by(customer_id=selected_customer_id).all()
+                        if sales_orders:
+                            st.error("Kan ikke slette kunden, da der er tilknyttede salgsordrer.")
+                        else:
+                            session.delete(selected_customer)
+                            session.commit()
+                            refresh_customers()
+                            st.success("Kunde slettet med succes!")
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"Fejl under sletning af kunde: {str(e)}")
+                else:
+                    st.warning("Marker 'Bekræft sletning' for at slette kunden.")
+        else:
+            st.info("Indtast et gyldigt kunde ID for at redigere eller slette.")
 
     elif management_option == "Leverandører":
-        suppliers = st.session_state.suppliers
+        suppliers = session.query(Supplier).all()
         supplier_options = [(s.id, s.name, s.address, s.contact_email, s.phone_number, s.vat_number, s.organic_number) for s in suppliers]
         df = pd.DataFrame(supplier_options, columns=["ID", "Navn", "Adresse", "Kontakt Email", "Telefonnummer", "CVR-nummer", "Økologinummer"])
         st.dataframe(df)
+
+        st.subheader("Rediger eller slet leverandør")
         selected_supplier_id = st.number_input("Indtast leverandør ID", min_value=1, step=1, key="selected_supplier_id")
-        selected_supplier = next((s for s in suppliers if s.id == selected_supplier_id), None)
+        selected_supplier = session.query(Supplier).filter_by(id=selected_supplier_id).first()
         if selected_supplier:
-            with st.form("update_supplier_form"):
-                new_name = st.text_input("Leverandørens navn", value=selected_supplier.name)
-                new_address = st.text_input("Leverandørens adresse", value=selected_supplier.address)
-                new_contact_email = st.text_input("Kontakt email", value=selected_supplier.contact_email)
-                new_phone_number = st.text_input("Telefonnummer", value=selected_supplier.phone_number)
-                new_vat_number = st.text_input("CVR-nummer", value=selected_supplier.vat_number)
-                new_organic_number = st.text_input("Økologinummer", value=selected_supplier.organic_number or "")
-                report_file = st.file_uploader("Upload ny leverandørrapport (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="edit_supplier_report")
-                update_supplier = st.form_submit_button("Opdater leverandør")
+            new_name = st.text_input("Leverandørens navn", value=selected_supplier.name)
+            new_address = st.text_input("Leverandørens adresse", value=selected_supplier.address)
+            new_contact_email = st.text_input("Kontakt email", value=selected_supplier.contact_email)
+            new_phone_number = st.text_input("Telefonnummer", value=selected_supplier.phone_number)
+            new_vat_number = st.text_input("CVR-nummer", value=selected_supplier.vat_number)
+            new_organic_number = st.text_input("Økologinummer", value=selected_supplier.organic_number or "")
+
+            report_file = st.file_uploader("Upload ny leverandørrapport (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="edit_supplier_report")
             report_file_data = selected_supplier.report_file
             report_filename = selected_supplier.report_filename
             report_mimetype = selected_supplier.report_mimetype
@@ -488,18 +498,18 @@ if action == "Administrationsside":
                 report_file_data = report_file.read()
                 report_filename = report_file.name
                 report_mimetype = report_file.type
-            if update_supplier:
+
+            if st.button("Opdater leverandør"):
+                selected_supplier.name = new_name
+                selected_supplier.address = new_address
+                selected_supplier.contact_email = new_contact_email
+                selected_supplier.phone_number = new_phone_number
+                selected_supplier.vat_number = new_vat_number
+                selected_supplier.organic_number = new_organic_number
+                selected_supplier.report_file = report_file_data
+                selected_supplier.report_filename = report_filename
+                selected_supplier.report_mimetype = report_mimetype
                 try:
-                    db_supplier = session.query(Supplier).filter_by(id=selected_supplier_id).first()
-                    db_supplier.name = new_name
-                    db_supplier.address = new_address
-                    db_supplier.contact_email = new_contact_email
-                    db_supplier.phone_number = new_phone_number
-                    db_supplier.vat_number = new_vat_number
-                    db_supplier.organic_number = new_organic_number
-                    db_supplier.report_file = report_file_data
-                    db_supplier.report_filename = report_filename
-                    db_supplier.report_mimetype = report_mimetype
                     session.commit()
                     refresh_suppliers()
                     st.success("Leverandør opdateret med succes!")
@@ -518,14 +528,18 @@ if action == "Administrationsside":
                     st.image(image)
                 else:
                     st.download_button("Download rapport", data=selected_supplier.report_file, file_name=selected_supplier.report_filename, mime=selected_supplier.report_mimetype)
+            else:
+                st.write("Ingen leverandørrapport uploadet.")
+        else:
+            st.info("Indtast et gyldigt leverandør ID for at redigere eller slette.")
 
     elif management_option == "Styklister (BoM)":
-        boms = st.session_state.boms
-        products = st.session_state.products
+        boms = session.query(BoM).all()
+        products = session.query(Product).all()
         product_map = {p.id: p for p in products}
         recipes = session.query(Recipe).all()
         recipe_map = {r.id: r for r in recipes}
-        materials = st.session_state.materials
+        materials = session.query(Material).all()
         material_map = {m.id: m for m in materials}
         bom_options = []
         for b in boms:
@@ -549,26 +563,30 @@ if action == "Administrationsside":
             bom_options.append((b.id, product_name, component_type, component_name, b.quantity_required, b.unit))
         df = pd.DataFrame(bom_options, columns=["ID", "Produkt", "Komponenttype", "Komponentnavn", "Krævet Mængde", "Enhed"])
         st.dataframe(df)
+
+        st.subheader("Slet styklistepost")
         selected_bom_id = st.number_input("Indtast stykliste ID", min_value=1, step=1, key="selected_bom_id")
-        selected_bom = next((x for x in boms if x.id == selected_bom_id), None)
+        selected_bom = session.query(BoM).filter_by(id=selected_bom_id).first()
         if selected_bom:
-            with st.form("delete_bom_form"):
-                delete_bom = st.form_submit_button("Slet styklistepost")
+            if st.button("Slet styklistepost"):
                 confirm_delete = st.checkbox("Bekræft sletning")
-            if delete_bom and confirm_delete:
-                try:
-                    db_bom = session.query(BoM).filter_by(id=selected_bom_id).first()
-                    session.delete(db_bom)
-                    session.commit()
-                    refresh_boms()
-                    st.success("Styklistepost slettet med succes!")
-                except Exception as e:
-                    session.rollback()
-                    st.error(f"Fejl under sletning af styklistepost: {str(e)}")
+                if confirm_delete:
+                    try:
+                        session.delete(selected_bom)
+                        session.commit()
+                        refresh_boms()
+                        st.success("Styklistepost slettet med succes!")
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"Fejl under sletning af styklistepost: {str(e)}")
+                else:
+                    st.warning("Marker 'Bekræft sletning' for at slette styklisteposten.")
+        else:
+            st.info("Indtast et gyldigt stykliste ID for at slette.")
 
     elif management_option == "Produktionsordrer":
-        production_orders = st.session_state.production_orders
-        products = st.session_state.products
+        production_orders = session.query(ProductionOrder).all()
+        products = session.query(Product).all()
         product_map = {p.id: p for p in products}
         production_data = []
         for po in production_orders:
@@ -583,27 +601,27 @@ if action == "Administrationsside":
             })
         df = pd.DataFrame(production_data)
         st.dataframe(df)
+
+        st.subheader("Rediger eller slet produktionsordre")
         selected_production_order_id = st.number_input("Indtast produktionsordre ID", min_value=1, step=1, key="selected_production_order_id")
-        selected_order = next((po for po in production_orders if po.id == selected_production_order_id), None)
+        selected_order = session.query(ProductionOrder).filter_by(id=selected_production_order_id).first()
         if selected_order:
-            with st.form("update_production_order_form"):
-                new_status = st.selectbox("Status", ["Afventer", "Planlagt", "I gang", "Afsluttet", "Annulleret"], index=["Afventer", "Planlagt", "I gang", "Afsluttet", "Annulleret"].index(selected_order.status))
-                new_quantity = st.number_input("Ny mængde af produkt", min_value=0.0, step=0.1, value=selected_order.quantity)
-                product_options = [(p.id, p.name) for p in products]
-                selected_product_index = next((index for (index, p) in enumerate(product_options) if p[0] == selected_order.product_id), 0)
-                new_product_option = st.selectbox("Vælg nyt produkt", product_options, index=selected_product_index)
-                update_production_order = st.form_submit_button("Opdater produktionsordre")
+            new_status = st.selectbox("Status", ["Afventer", "Planlagt", "I gang", "Afsluttet", "Annulleret"], index=["Afventer", "Planlagt", "I gang", "Afsluttet", "Annulleret"].index(selected_order.status))
+            new_quantity = st.number_input("Ny mængde af produkt", min_value=0.0, step=0.1, value=selected_order.quantity)
+            product_options = [(p.id, p.name) for p in products]
+            selected_product_index = next((index for (index, p) in enumerate(product_options) if p[0] == selected_order.product_id), 0)
+            new_product_option = st.selectbox("Vælg nyt produkt", product_options, index=selected_product_index)
             new_product_id = new_product_option[0]
-            if update_production_order:
+
+            if st.button("Opdater produktionsordre"):
                 try:
-                    db_order = session.query(ProductionOrder).filter_by(id=selected_production_order_id).first()
-                    old_product = session.query(Product).filter_by(id=db_order.product_id).first()
-                    old_product.quantity -= db_order.quantity
+                    old_product = session.query(Product).filter_by(id=selected_order.product_id).first()
+                    old_product.quantity -= selected_order.quantity
                     new_product = session.query(Product).filter_by(id=new_product_id).first()
                     new_product.quantity += new_quantity
-                    db_order.status = new_status
-                    db_order.quantity = new_quantity
-                    db_order.product_id = new_product_id
+                    selected_order.status = new_status
+                    selected_order.quantity = new_quantity
+                    selected_order.product_id = new_product_id
                     session.commit()
                     refresh_products()
                     refresh_production_orders()
@@ -612,43 +630,46 @@ if action == "Administrationsside":
                     session.rollback()
                     st.error(f"Fejl under opdatering af produktionsordre: {str(e)}")
 
-            with st.form("delete_production_order_form"):
-                delete_production_order = st.form_submit_button("Slet produktionsordre")
+            if st.button("Slet produktionsordre"):
                 confirm_delete = st.checkbox("Bekræft sletning")
-            if delete_production_order and confirm_delete:
-                try:
-                    db_order = session.query(ProductionOrder).filter_by(id=selected_production_order_id).first()
-                    product = session.query(Product).filter_by(id=db_order.product_id).first()
-                    product.quantity -= db_order.quantity
-                    product_batch = session.query(ProductBatch).filter_by(batch_id=db_order.batch_id).first()
-                    if product_batch:
-                        session.delete(product_batch)
-                    components_used = session.query(ProductionOrderComponent).filter_by(production_order_id=selected_production_order_id).all()
-                    for component in components_used:
-                        if component.component_material_id:
-                            material = session.query(Material).filter_by(id=component.component_material_id).first()
-                            batch = session.query(MaterialBatch).filter_by(id=component.batch_id).first()
-                            batch.quantity += component.quantity_used
-                            material.quantity += convert_units(component.quantity_used, component.unit, material.unit)
-                        else:
-                            product_comp = session.query(Product).filter_by(id=component.component_product_id).first()
-                            batch = session.query(ProductBatch).filter_by(id=component.batch_id).first()
-                            batch.quantity += component.quantity_used
-                            product_comp.quantity += convert_units(component.quantity_used, component.unit, product_comp.unit)
-                        session.delete(component)
-                    session.delete(db_order)
-                    session.commit()
-                    refresh_materials()
-                    refresh_products()
-                    refresh_production_orders()
-                    refresh_product_batches()
-                    st.success("Produktionsordre slettet og lager opdateret med succes!")
-                except Exception as e:
-                    session.rollback()
-                    st.error(f"Fejl under sletning af produktionsordre: {str(e)}")
+                if confirm_delete:
+                    try:
+                        db_order = session.query(ProductionOrder).filter_by(id=selected_production_order_id).first()
+                        product = session.query(Product).filter_by(id=db_order.product_id).first()
+                        product.quantity -= db_order.quantity
+                        product_batch = session.query(ProductBatch).filter_by(batch_id=db_order.batch_id).first()
+                        if product_batch:
+                            session.delete(product_batch)
+                        components_used = session.query(ProductionOrderComponent).filter_by(production_order_id=selected_production_order_id).all()
+                        for component in components_used:
+                            if component.component_material_id:
+                                material = session.query(Material).filter_by(id=component.component_material_id).first()
+                                batch = session.query(MaterialBatch).filter_by(id=component.batch_id).first()
+                                batch.quantity += component.quantity_used
+                                material.quantity += convert_units(component.quantity_used, component.unit, material.unit)
+                            else:
+                                product_comp = session.query(Product).filter_by(id=component.component_product_id).first()
+                                batch = session.query(ProductBatch).filter_by(id=component.batch_id).first()
+                                batch.quantity += component.quantity_used
+                                product_comp.quantity += convert_units(component.quantity_used, component.unit, product_comp.unit)
+                            session.delete(component)
+                        session.delete(db_order)
+                        session.commit()
+                        refresh_materials()
+                        refresh_products()
+                        refresh_production_orders()
+                        refresh_product_batches()
+                        st.success("Produktionsordre slettet og lager opdateret med succes!")
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"Fejl under sletning af produktionsordre: {str(e)}")
+                else:
+                    st.warning("Marker 'Bekræft sletning' for at slette produktionsordren.")
+        else:
+            st.info("Indtast et gyldigt produktionsordre ID for at redigere eller slette.")
 
     elif management_option == "Salgsordrer":
-        sales_orders = st.session_state.sales_orders
+        sales_orders = session.query(SalesOrder).all()
         products = st.session_state.products
         product_map = {p.id: p for p in products}
         customers = st.session_state.customers
@@ -667,16 +688,15 @@ if action == "Administrationsside":
             })
         df = pd.DataFrame(sales_data)
         st.dataframe(df)
+
+        st.subheader("Rediger eller slet salgsordre")
         selected_sales_order_id = st.number_input("Indtast salgsordre ID", min_value=1, step=1, key="selected_sales_order_id")
-        selected_order = next((so for so in sales_orders if so.id == selected_sales_order_id), None)
+        selected_order = session.query(SalesOrder).filter_by(id=selected_sales_order_id).first()
         if selected_order:
-            with st.form("update_sales_order_form"):
-                new_status = st.selectbox("Status", ["Afventer", "Afsluttet", "Annulleret"], index=["Afventer", "Afsluttet", "Annulleret"].index(selected_order.status))
-                update_sales_order = st.form_submit_button("Opdater salgsordre")
-            if update_sales_order:
+            new_status = st.selectbox("Status", ["Afventer", "Afsluttet", "Annulleret"], index=["Afventer", "Afsluttet", "Annulleret"].index(selected_order.status))
+            if st.button("Opdater salgsordre"):
+                selected_order.status = new_status
                 try:
-                    db_so = session.query(SalesOrder).filter_by(id=selected_sales_order_id).first()
-                    db_so.status = new_status
                     session.commit()
                     refresh_sales_orders()
                     st.success("Salgsordre opdateret med succes!")
@@ -684,25 +704,27 @@ if action == "Administrationsside":
                     session.rollback()
                     st.error(f"Fejl under opdatering af salgsordre: {str(e)}")
 
-            with st.form("delete_sales_order_form"):
-                delete_sales_order = st.form_submit_button("Slet salgsordre")
+            if st.button("Slet salgsordre"):
                 confirm_delete = st.checkbox("Bekræft sletning")
-            if delete_sales_order and confirm_delete:
-                try:
-                    db_so = session.query(SalesOrder).filter_by(id=selected_sales_order_id).first()
-                    product = session.query(Product).filter_by(id=db_so.product_id).first()
-                    product.quantity += db_so.quantity
-                    session.delete(db_so)
-                    session.commit()
-                    refresh_sales_orders()
-                    refresh_products()
-                    st.success("Salgsordre slettet og lager opdateret med succes!")
-                except Exception as e:
-                    session.rollback()
-                    st.error(f"Fejl under sletning af salgsordre: {str(e)}")
+                if confirm_delete:
+                    try:
+                        product = session.query(Product).filter_by(id=selected_order.product_id).first()
+                        product.quantity += selected_order.quantity
+                        session.delete(selected_order)
+                        session.commit()
+                        refresh_sales_orders()
+                        refresh_products()
+                        st.success("Salgsordre slettet og lager opdateret med succes!")
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"Fejl under sletning af salgsordre: {str(e)}")
+                else:
+                    st.warning("Marker 'Bekræft sletning' for at slette salgsordren.")
+        else:
+            st.info("Indtast et gyldigt salgsordre ID for at redigere eller slette.")
 
     elif management_option == "Materiale Batches":
-        material_batches = st.session_state.material_batches
+        material_batches = session.query(MaterialBatch).all()
         materials = st.session_state.materials
         material_map = {m.id: m for m in materials}
         batch_data = []
@@ -721,7 +743,7 @@ if action == "Administrationsside":
         st.dataframe(df)
 
     elif management_option == "Produkt Batches":
-        product_batches = st.session_state.product_batches
+        product_batches = session.query(ProductBatch).all()
         products = st.session_state.products
         product_map = {p.id: p for p in products}
         batch_data = []
@@ -739,7 +761,7 @@ if action == "Administrationsside":
         st.dataframe(df)
 
     elif management_option == "Indkøbsordrer":
-        purchase_orders = st.session_state.purchase_orders
+        purchase_orders = session.query(PurchaseOrder).all()
         suppliers = st.session_state.suppliers
         supplier_map = {s.id: s for s in suppliers}
         po_data = []
@@ -754,7 +776,7 @@ if action == "Administrationsside":
         df = pd.DataFrame(po_data)
         st.dataframe(df)
         selected_po_id = st.number_input("Indtast indkøbsordre ID", min_value=1, step=1, key="selected_po_id")
-        selected_po = next((po for po in purchase_orders if po.id == selected_po_id), None)
+        selected_po = session.query(PurchaseOrder).filter_by(id=selected_po_id).first()
         if selected_po:
             sup = supplier_map.get(selected_po.supplier_id)
             st.write(f"**Leverandør:** {sup.name if sup else 'Ukendt'}")
@@ -785,15 +807,14 @@ if action == "Administrationsside":
                     st.image(image)
                 else:
                     st.download_button("Download faktura", data=selected_po.invoice_file, file_name=selected_po.invoice_filename, mime=selected_po.invoice_mimetype)
-
+            else:
+                st.write("Ingen faktura uploadet.")
             suppliers_options = [(s.id, s.name) for s in suppliers]
             selected_supplier_index = next((index for (index, s) in enumerate(suppliers_options) if s[0] == selected_po.supplier_id), 0)
-            with st.form("update_purchase_order_form"):
-                new_supplier_id = st.selectbox("Vælg ny leverandør", suppliers_options, index=selected_supplier_index)
-                new_date = st.date_input("Ny dato", value=selected_po.date)
-                new_checked = st.checkbox("Vare modtaget og tjekket", value=selected_po.checked)
-                invoice_file = st.file_uploader("Upload ny faktura (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="edit_invoice_file")
-                update_po = st.form_submit_button("Opdater indkøbsordre")
+            new_supplier_id = st.selectbox("Vælg ny leverandør", suppliers_options, index=selected_supplier_index)
+            new_date = st.date_input("Ny dato", value=selected_po.date)
+            new_checked = st.checkbox("Vare modtaget og tjekket", value=selected_po.checked)
+            invoice_file = st.file_uploader("Upload ny faktura (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="edit_invoice_file")
             invoice_file_data = selected_po.invoice_file
             invoice_filename = selected_po.invoice_filename
             invoice_mimetype = selected_po.invoice_mimetype
@@ -801,7 +822,8 @@ if action == "Administrationsside":
                 invoice_file_data = invoice_file.read()
                 invoice_filename = invoice_file.name
                 invoice_mimetype = invoice_file.type
-            if update_po:
+
+            if st.button("Opdater indkøbsordre"):
                 try:
                     db_po = session.query(PurchaseOrder).filter_by(id=selected_po_id).first()
                     db_po.supplier_id = new_supplier_id
@@ -817,70 +839,40 @@ if action == "Administrationsside":
                     session.rollback()
                     st.error(f"Fejl under opdatering af indkøbsordre: {str(e)}")
 
-            with st.form("delete_purchase_order_form"):
-                delete_po = st.form_submit_button("Slet indkøbsordre")
+            if st.button("Slet indkøbsordre"):
                 confirm_delete = st.checkbox("Bekræft sletning")
-            if delete_po and confirm_delete:
-                try:
-                    db_po = session.query(PurchaseOrder).filter_by(id=selected_po_id).first()
-                    items = session.query(PurchaseOrderItem).filter_by(purchase_order_id=selected_po_id).all()
-                    for item in items:
-                        material = session.query(Material).filter_by(id=item.material_id).first()
-                        material.quantity -= convert_units(item.quantity, item.unit, material.unit)
-                        batch = session.query(MaterialBatch).filter_by(batch_id=item.batch_id).first()
-                        if batch:
-                            session.delete(batch)
-                        session.delete(item)
-                    session.delete(db_po)
-                    session.commit()
-                    refresh_materials()
-                    refresh_purchase_orders()
-                    refresh_material_batches()
-                    st.success("Indkøbsordre og relaterede data slettet med succes!")
-                except Exception as e:
-                    session.rollback()
-                    st.error(f"Fejl under sletning af indkøbsordre: {str(e)}")
+                if confirm_delete:
+                    try:
+                        db_po = session.query(PurchaseOrder).filter_by(id=selected_po_id).first()
+                        items = session.query(PurchaseOrderItem).filter_by(purchase_order_id=selected_po_id).all()
+                        for item in items:
+                            material = session.query(Material).filter_by(id=item.material_id).first()
+                            material.quantity -= convert_units(item.quantity, item.unit, material.unit)
+                            batch = session.query(MaterialBatch).filter_by(batch_id=item.batch_id).first()
+                            if batch:
+                                session.delete(batch)
+                            session.delete(item)
+                        session.delete(db_po)
+                        session.commit()
+                        refresh_materials()
+                        refresh_purchase_orders()
+                        refresh_material_batches()
+                        st.success("Indkøbsordre og relaterede data slettet med succes!")
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"Fejl under sletning af indkøbsordre: {str(e)}")
+                else:
+                    st.warning("Marker 'Bekræft sletning' for at slette indkøbsordren.")
 
-            with st.form("copy_purchase_order_form"):
-                copy_po = st.form_submit_button("Kopier indkøbsordre")
-            if copy_po:
-                try:
-                    db_po = session.query(PurchaseOrder).filter_by(id=selected_po_id).first()
-                    new_po = PurchaseOrder(
-                        supplier_id=db_po.supplier_id,
-                        date=datetime.now(),
-                        checked=db_po.checked,
-                        invoice_file=db_po.invoice_file,
-                        invoice_filename=db_po.invoice_filename,
-                        invoice_mimetype=db_po.invoice_mimetype
-                    )
-                    session.add(new_po)
-                    session.flush()
-                    items = session.query(PurchaseOrderItem).filter_by(purchase_order_id=selected_po_id).all()
-                    for item in items:
-                        new_item = PurchaseOrderItem(
-                            purchase_order_id=new_po.id,
-                            material_id=item.material_id,
-                            batch_id=item.batch_id,
-                            quantity=item.quantity,
-                            unit=item.unit
-                        )
-                        session.add(new_item)
-                    session.commit()
-                    refresh_purchase_orders()
-                    st.success(f"Indkøbsordre kopieret med ID {new_po.id}")
-                except Exception as e:
-                    session.rollback()
-                    st.error(f"Fejl under kopiering af indkøbsordre: {str(e)}")
+                # The copying functionality was previously under a button in old code
+                # You can re-add if needed here
 
 elif action == "Opret et nyt materiale":
     st.header("Opret et nyt materiale")
-    with st.form("new_material_form"):
-        material_name = st.text_input("Materialets navn")
-        producer_name = st.text_input("Producentnavn")
-        unit = st.selectbox("Enhed", ["kg", "g", "l", "ml", "stk"], key="material_unit")
-        submit_new_material = st.form_submit_button("Tilføj materiale")
-    if submit_new_material:
+    material_name = st.text_input("Materialets navn")
+    producer_name = st.text_input("Producentnavn")
+    unit = st.selectbox("Enhed", ["kg", "g", "l", "ml", "stk"], key="material_unit")
+    if st.button("Tilføj materiale"):
         if material_name and unit:
             new_material = Material(name=material_name, unit=unit, producer_name=producer_name)
             try:
@@ -931,12 +923,10 @@ elif action == "Køb noget":
                 st.subheader("Materialer i indkøbsordren")
                 po_items_df = pd.DataFrame(st.session_state.purchase_order_items)
                 st.dataframe(po_items_df[['material_name', 'batch_id', 'quantity', 'unit']])
-                with st.form("finalize_purchase_form"):
-                    checked = st.checkbox("Vare modtaget og tjekket")
-                    date = st.date_input("Dato for indkøb", datetime.now(), key="buy_date")
-                    invoice_file = st.file_uploader("Upload faktura (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="invoice_file")
-                    finalize_purchase = st.form_submit_button("Afgiv indkøbsordre")
-                if finalize_purchase:
+                checked = st.checkbox("Vare modtaget og tjekket")
+                date = st.date_input("Dato for indkøb", datetime.now(), key="buy_date")
+                invoice_file = st.file_uploader("Upload faktura (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="invoice_file")
+                if st.button("Afgiv indkøbsordre"):
                     try:
                         invoice_file_data = None
                         invoice_filename = None
@@ -1008,119 +998,155 @@ elif action == "Producer noget":
             st.error("Ingen opskrift fundet for det valgte produkt.")
         else:
             bom_items = session.query(BoM).filter_by(recipe_id=recipe.id).all()
-            with st.form("production_form"):
-                quantity = st.number_input(
-                    f"Mængde der skal produceres (Standard opskrift producerer {recipe.output_quantity} {product_unit})",
-                    min_value=0.0,
-                    step=0.1,
-                    key="produce_quantity"
-                )
-                batch_id = st.text_input("Batch ID for det producerede produkt", key="produce_batch_id")
-                date = st.date_input("Produktionsdato", datetime.now(), key="produce_date")
-                submit_production = st.form_submit_button("Opret produktionsordre")
+            quantity = st.number_input(
+                f"Mængde der skal produceres (Standard opskrift producerer {recipe.output_quantity} {product_unit})",
+                min_value=0.0,
+                step=0.1,
+                key="produce_quantity"
+            )
+            batch_id = st.text_input("Batch ID for det producerede produkt", key="produce_batch_id")
+            date = st.date_input("Produktionsdato", datetime.now(), key="produce_date")
             if not bom_items:
                 st.error("Ingen stykliste fundet for det valgte produkt.")
             else:
-                if submit_production:
-                    sufficient_inventory = True
-                    component_batches = {}
-                    scaling_factor = quantity / recipe.output_quantity if recipe.output_quantity != 0 else 1
-                    materials = st.session_state.materials
-                    material_map = {m.id: m for m in materials}
-                    products_cache = st.session_state.products
-                    product_map = {pr.id: pr for pr in products_cache}
-                    for bom in bom_items:
-                        required_total = bom.quantity_required * scaling_factor
-                        if bom.component_material_id:
-                            batches = session.query(MaterialBatch).filter_by(material_id=bom.component_material_id).filter(MaterialBatch.quantity > 0).all()
+                st.subheader("Vælg batches for hver komponent")
+                scaling_factor = quantity / recipe.output_quantity if recipe.output_quantity != 0 else 1
+                component_allocations = {}
+                materials_map = {m.id: m for m in st.session_state.materials}
+                products_map = {p.id: p for p in st.session_state.products}
+
+                for bom in bom_items:
+                    required_total = bom.quantity_required * scaling_factor
+                    if bom.component_material_id:
+                        component = materials_map[bom.component_material_id]
+                        available_batches = [b for b in st.session_state.material_batches if b.material_id == component.id and b.quantity > 0]
+                    else:
+                        component = products_map[bom.component_product_id]
+                        available_batches = [b for b in st.session_state.product_batches if b.product_id == component.id and b.quantity > 0]
+
+                    st.write(f"**Komponent: {component.name}**")
+                    st.write(f"Krævet mængde: {required_total} {bom.unit}")
+
+                    if available_batches:
+                        batch_options = []
+                        for b in available_batches:
+                            converted_available = convert_units(b.quantity, b.unit, bom.unit)
+                            batch_options.append((b.id, f"Batch {b.batch_id} - Tilgængelig: {converted_available} {bom.unit}"))
+
+                        selected_batch_id = st.selectbox(
+                            f"Vælg batch for {component.name}",
+                            batch_options,
+                            format_func=lambda x: x[1],
+                            key=f"select_batch_{bom.id}"
+                        )
+                        chosen_batch_db_id = selected_batch_id[0]
+                        chosen_batch = None
+                        for b in available_batches:
+                            if b.id == chosen_batch_db_id:
+                                chosen_batch = b
+                                break
+
+                        if chosen_batch:
+                            available_converted = convert_units(chosen_batch.quantity, chosen_batch.unit, bom.unit)
+                            allocated_quantity = st.number_input(
+                                f"Angiv mængde fra valgte batch (max {available_converted} {bom.unit})",
+                                min_value=0.0,
+                                max_value=available_converted,
+                                step=0.1,
+                                key=f"allocate_quantity_{bom.id}"
+                            )
+                            component_allocations[bom.id] = {
+                                'component_material_id': bom.component_material_id,
+                                'component_product_id': bom.component_product_id,
+                                'batch_id': chosen_batch.id,
+                                'allocated_quantity': allocated_quantity,
+                                'required_total': required_total,
+                                'bom_unit': bom.unit
+                            }
                         else:
-                            batches = session.query(ProductBatch).filter_by(product_id=bom.component_product_id).filter(ProductBatch.quantity > 0).all()
-                        total_allocated = 0
-                        batch_allocations = {}
-                        if batches:
-                            for batch in batches:
-                                available_quantity = convert_units(batch.quantity, batch.unit, bom.unit)
-                                if total_allocated < required_total:
-                                    allocation = min(available_quantity, required_total - total_allocated)
-                                    if allocation > 0:
-                                        batch_allocations[batch.id] = allocation
-                                        total_allocated += allocation
-                            if total_allocated < required_total:
-                                sufficient_inventory = False
-                        else:
-                            sufficient_inventory = False
-                        component_batches[bom.id] = batch_allocations
+                            component_allocations[bom.id] = None
+                    else:
+                        st.error("Ingen batches tilgængelige for denne komponent.")
+                        component_allocations[bom.id] = None
+
+                if st.button("Opret produktionsordre", key="create_production"):
                     if batch_id.strip() == "":
                         st.error("Batch ID er påkrævet.")
-                    elif not sufficient_inventory:
-                        st.error("Der er ikke nok komponenter til at producere den ønskede mængde.")
                     else:
-                        try:
-                            new_order = ProductionOrder(product_id=product_id, quantity=quantity, status='Afsluttet', batch_id=batch_id, date=date)
-                            session.add(new_order)
-                            session.flush()
-                            for bom in bom_items:
-                                allocations = component_batches.get(bom.id, {})
-                                for batch_id_allocated, allocated_quantity in allocations.items():
-                                    if bom.component_material_id:
-                                        batch = session.query(MaterialBatch).filter_by(id=batch_id_allocated).first()
-                                        batch_quantity_to_deduct = convert_units(allocated_quantity, bom.unit, batch.unit)
+                        sufficient_inventory = True
+                        for bom_id, alloc in component_allocations.items():
+                            if alloc is None or alloc['allocated_quantity'] < alloc['required_total']:
+                                sufficient_inventory = False
+                                break
+
+                        if not sufficient_inventory:
+                            st.error("Der er ikke nok komponenter tildelt til at producere den ønskede mængde.")
+                        else:
+                            try:
+                                new_order = ProductionOrder(product_id=product_id, quantity=quantity, status='Afsluttet', batch_id=batch_id, date=date)
+                                session.add(new_order)
+                                session.flush()
+                                for bom_id, alloc in component_allocations.items():
+                                    if alloc['component_material_id']:
+                                        batch = session.query(MaterialBatch).filter_by(id=alloc['batch_id']).first()
+                                        batch_quantity_to_deduct = convert_units(alloc['allocated_quantity'], alloc['bom_unit'], batch.unit)
                                         batch.quantity -= batch_quantity_to_deduct
-                                        material = material_map[bom.component_material_id]
+                                        material = session.query(Material).filter_by(id=alloc['component_material_id']).first()
                                         material.quantity -= batch_quantity_to_deduct
                                         production_component = ProductionOrderComponent(
                                             production_order_id=new_order.id,
-                                            component_material_id=bom.component_material_id,
+                                            component_material_id=alloc['component_material_id'],
                                             batch_id=batch.id,
-                                            quantity_used=allocated_quantity,
-                                            unit=bom.unit
+                                            quantity_used=alloc['allocated_quantity'],
+                                            unit=alloc['bom_unit']
                                         )
                                         session.add(production_component)
                                     else:
-                                        batch = session.query(ProductBatch).filter_by(id=batch_id_allocated).first()
-                                        batch_quantity_to_deduct = convert_units(allocated_quantity, bom.unit, batch.unit)
+                                        batch = session.query(ProductBatch).filter_by(id=alloc['batch_id']).first()
+                                        batch_quantity_to_deduct = convert_units(alloc['allocated_quantity'], alloc['bom_unit'], batch.unit)
                                         batch.quantity -= batch_quantity_to_deduct
-                                        product_comp = product_map[bom.component_product_id]
+                                        product_comp = session.query(Product).filter_by(id=alloc['component_product_id']).first()
                                         product_comp.quantity -= batch_quantity_to_deduct
                                         production_component = ProductionOrderComponent(
                                             production_order_id=new_order.id,
-                                            component_product_id=bom.component_product_id,
+                                            component_product_id=alloc['component_product_id'],
                                             batch_id=batch.id,
-                                            quantity_used=allocated_quantity,
-                                            unit=bom.unit
+                                            quantity_used=alloc['allocated_quantity'],
+                                            unit=alloc['bom_unit']
                                         )
                                         session.add(production_component)
-                            product_to_update = product_map[product_id]
-                            product_to_update.quantity += quantity
-                            new_product_batch = ProductBatch(
-                                product_id=product_id,
-                                batch_id=batch_id,
-                                quantity=quantity,
-                                unit=product_unit,
-                                date=date
-                            )
-                            session.add(new_product_batch)
-                            session.commit()
-                            refresh_materials()
-                            refresh_products()
-                            refresh_product_batches()
-                            refresh_production_orders()
-                            st.success("Produktion og batch oprettet med succes!")
-                        except Exception as e:
-                            session.rollback()
-                            st.error(f"Der opstod en fejl under afslutning af produktion: {str(e)}")
+
+                                product_to_update = session.query(Product).filter_by(id=product_id).first()
+                                product_to_update.quantity += quantity
+                                new_product_batch = ProductBatch(
+                                    product_id=product_id,
+                                    batch_id=batch_id,
+                                    quantity=quantity,
+                                    unit=product_unit,
+                                    date=date
+                                )
+                                session.add(new_product_batch)
+                                session.commit()
+                                refresh_materials()
+                                refresh_products()
+                                refresh_product_batches()
+                                refresh_production_orders()
+                                st.success("Produktion og batch oprettet med succes!")
+                            except Exception as e:
+                                session.rollback()
+                                st.error(f"Der opstod en fejl under afslutning af produktion: {str(e)}")
+    else:
+        st.error("Ingen produkter tilgængelige for produktion.")
 
 elif action == "Opret en ny opskrift / stykliste":
     st.header("Opret stykliste (BoM)")
     if "bom_components" not in st.session_state:
         st.session_state.bom_components = []
-
     st.subheader("1. Opret nyt produkt")
     with st.form("product_creation_form"):
         product_name = st.text_input("Produktnavn", key="bom_product_name")
         unit = st.selectbox("Produkt enhed", ["kg", "g", "l", "ml", "stk"], key="bom_product_unit")
         create_product_button = st.form_submit_button("Opret produkt")
-
     if create_product_button:
         if product_name and unit:
             new_product = Product(name=product_name, unit=unit)
@@ -1200,16 +1226,14 @@ elif action == "Opret en ny opskrift / stykliste":
                         })
                         st.success(f"Komponent '{item_name}' tilføjet til stykliste med succes!")
         else:
-            st.error(f"Ingen {component_type.lower()}er tilgængelige.")
+            st.error(f"Ingen {component_type.lower()}er tilgængelige for tilføjelse til stykliste.")
 
         if st.session_state.bom_components:
             st.subheader("Komponenter tilføjet:")
             components_df = pd.DataFrame(st.session_state.bom_components)
             st.dataframe(components_df[['component_type', 'item_name', 'quantity_required', 'unit']])
 
-        with st.form("finalize_bom_form"):
-            finalize_bom = st.form_submit_button("Afslut stykliste")
-        if finalize_bom:
+        if st.button("Afslut stykliste", key="finalize_bom"):
             try:
                 for component in st.session_state.bom_components:
                     if component["component_type"] == "Materiale":
@@ -1252,12 +1276,10 @@ elif action == "Sælg noget":
         if customers:
             customer = st.selectbox("Vælg kunde", [(c.id, c.name) for c in customers], key="sales_customer")
             customer_id, customer_name = customer
-            with st.form("create_sales_order_form"):
-                unit = st.selectbox("Vælg enhed for salg", ["kg", "g", "l", "ml", "stk"], key="sale_unit")
-                quantity = st.number_input("Mængde solgt", min_value=0.0, step=0.1, key="sale_quantity")
-                date = st.date_input("Salgsdato", datetime.now(), key="sale_date")
-                create_sales_order = st.form_submit_button("Opret salgsordre")
-            if create_sales_order:
+            unit = st.selectbox("Vælg enhed for salg", ["kg", "g", "l", "ml", "stk"], key="sale_unit")
+            quantity = st.number_input("Mængde solgt", min_value=0.0, step=0.1, key="sale_quantity")
+            date = st.date_input("Salgsdato", datetime.now(), key="sale_date")
+            if st.button("Opret salgsordre", key="create_sales_order"):
                 converted_quantity = convert_units(quantity, unit, product_unit)
                 product_to_update = session.query(Product).filter_by(id=product_id).first()
                 if product_to_update and product_to_update.quantity >= converted_quantity:
@@ -1306,12 +1328,10 @@ elif action == "Smid noget ud":
                     key="dispose_material_batch"
                 )
                 batch_id, batch_name, batch_quantity, batch_unit = batch
-                with st.form("dispose_material_form"):
-                    quantity = st.number_input("Mængde at bortskaffe", min_value=0.0, max_value=batch_quantity, step=0.1, key="dispose_quantity")
-                    reason = st.text_area("Angiv årsag til bortskaffelse", key="dispose_reason")
-                    date = st.date_input("Dato for bortskaffelse", datetime.now(), key="dispose_date")
-                    dispose_submit = st.form_submit_button("Bortskaffel")
-                if dispose_submit:
+                quantity = st.number_input("Mængde at bortskaffe", min_value=0.0, max_value=batch_quantity, step=0.1, key="dispose_quantity")
+                reason = st.text_area("Angiv årsag til bortskaffelse", key="dispose_reason")
+                date = st.date_input("Dato for bortskaffelse", datetime.now(), key="dispose_date")
+                if st.button("Bortskaffel", key="dispose_submit"):
                     if quantity <= 0:
                         st.error("Mængden skal være større end 0.")
                     elif reason.strip() == "":
@@ -1356,12 +1376,10 @@ elif action == "Smid noget ud":
                     key="dispose_product_batch"
                 )
                 batch_id, batch_name, batch_quantity, batch_unit = batch
-                with st.form("dispose_product_form"):
-                    quantity = st.number_input("Mængde at bortskaffe", min_value=0.0, max_value=batch_quantity, step=0.1, key="dispose_quantity")
-                    reason = st.text_area("Angiv årsag til bortskaffelse", key="dispose_reason")
-                    date = st.date_input("Dato for bortskaffelse", datetime.now(), key="dispose_date")
-                    dispose_submit = st.form_submit_button("Bortskaffel")
-                if dispose_submit:
+                quantity = st.number_input("Mængde at bortskaffe", min_value=0.0, max_value=batch_quantity, step=0.1, key="dispose_quantity")
+                reason = st.text_area("Angiv årsag til bortskaffelse", key="dispose_reason")
+                date = st.date_input("Dato for bortskaffelse", datetime.now(), key="dispose_date")
+                if st.button("Bortskaffel", key="dispose_submit"):
                     if quantity <= 0:
                         st.error("Mængden skal være større end 0.")
                     elif reason.strip() == "":
@@ -1395,14 +1413,12 @@ elif action == "Smid noget ud":
 
 elif action == "Opret en ny kunde":
     st.header("Opret en ny kunde")
-    with st.form("new_customer_form"):
-        customer_name = st.text_input("Kundens navn")
-        customer_address = st.text_input("Kundens adresse")
-        contact_email = st.text_input("Kontakt email")
-        phone_number = st.text_input("Telefonnummer")
-        vat_number = st.text_input("CVR-nummer")
-        submit_new_customer = st.form_submit_button("Tilføj kunde")
-    if submit_new_customer:
+    customer_name = st.text_input("Kundens navn")
+    customer_address = st.text_input("Kundens adresse")
+    contact_email = st.text_input("Kontakt email")
+    phone_number = st.text_input("Telefonnummer")
+    vat_number = st.text_input("CVR-nummer")
+    if st.button("Tilføj kunde"):
         if all([customer_name, customer_address, contact_email, phone_number, vat_number]):
             new_customer = Customer(
                 name=customer_name,
@@ -1424,16 +1440,14 @@ elif action == "Opret en ny kunde":
 
 elif action == "Opret en ny leverandør":
     st.header("Opret en ny leverandør")
-    with st.form("new_supplier_form"):
-        supplier_name = st.text_input("Leverandørens navn")
-        supplier_address = st.text_input("Leverandørens adresse")
-        contact_email = st.text_input("Kontakt email")
-        phone_number = st.text_input("Telefonnummer")
-        vat_number = st.text_input("CVR-nummer")
-        organic_number = st.text_input("Økologinummer")
-        report_file = st.file_uploader("Upload leverandørrapport (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="supplier_report")
-        submit_new_supplier = st.form_submit_button("Tilføj leverandør")
-    if submit_new_supplier:
+    supplier_name = st.text_input("Leverandørens navn")
+    supplier_address = st.text_input("Leverandørens adresse")
+    contact_email = st.text_input("Kontakt email")
+    phone_number = st.text_input("Telefonnummer")
+    vat_number = st.text_input("CVR-nummer")
+    organic_number = st.text_input("Økologinummer")
+    report_file = st.file_uploader("Upload leverandørrapport (PDF eller billede)", type=["pdf", "png", "jpg", "jpeg"], key="supplier_report")
+    if st.button("Tilføj leverandør"):
         if all([supplier_name, supplier_address, contact_email, phone_number, vat_number]):
             report_file_data = None
             report_filename = None
